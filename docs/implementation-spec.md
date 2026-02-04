@@ -177,7 +177,8 @@ enum DrawStatus {
   RandomRequested,
   RandomFulfilled,
   Finalized,
-  RolledOver
+  RolledOver,
+  TimedOut
 }
 
 struct Draw {
@@ -203,7 +204,9 @@ State transitions:
    - if no ticket: `RolledOver`
    - else: `RandomRequested`
 4. `onRandomness` -> `RandomFulfilled`
-5. `finalizeDraw` -> `Finalized` + payout
+5. `timeoutDraw` (if VRF unfulfilled over `maxWaitForFulfill`) -> `TimedOut`
+6. `claimTimedOutRefund` -> per-player refund path from reserved funds
+7. `finalizeDraw` -> `Finalized` + payout
 
 Ticket ownership model for MVP:
 
@@ -253,8 +256,10 @@ The following external methods are required.
 - `createDraw(address token, uint96 ticketPrice, uint32 start, uint32 end, uint16 houseEdgeBps) onlyOwner`
 - `buyTickets(uint256 drawId, uint32 count) payable`
 - `startDraw(uint256 drawId)`
+- `timeoutDraw(uint256 drawId)`
+- `claimTimedOutRefund(uint256 drawId)`
 - `finalizeDraw(uint256 drawId)`
-- admin setters: max tickets per tx (`default=50`), pause
+- admin setters: max tickets per tx (`default=50`), max wait, pause
 - view helpers: `getDraw`, `getTicketOwner`, `getCurrentPrize`
 
 ## 7. Events
@@ -264,7 +269,7 @@ At minimum:
 - Vault: `Funded`, `Withdrawn`, `Payout`, `ReservedChanged`, `GameWhitelistUpdated`
 - Router: `RandomRequested`, `RandomFulfilled`, `RandomDeliveryFailed`, `RandomDelivered`
 - Dice: `BetCommitted`, `DiceRandomRequested`, `DiceRandomFulfilled`, `BetSettled`, `BetSlashed`, `BetCancelled`
-- Lottery: `DrawCreated`, `TicketsBought`, `LotteryRandomRequested`, `LotteryRandomFulfilled`, `LotteryFinalized`, `LotteryRolledOver`
+- Lottery: `DrawCreated`, `TicketsBought`, `LotteryRandomRequested`, `LotteryRandomFulfilled`, `LotteryFinalized`, `LotteryRolledOver`, `LotteryTimedOut`, `LotteryTimeoutRefundClaimed`
 
 ## 8. Anti-Cheating and MEV Strategy
 

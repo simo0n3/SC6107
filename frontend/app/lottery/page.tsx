@@ -9,7 +9,7 @@ import { ADDRESSES, SEPOLIA_EXPLORER } from "@/lib/config";
 import { erc20Abi, lotteryGameAbi, vrfRouterAbi } from "@/lib/abis";
 import { explorerTx, formatAmount, isEthToken, toDateTime } from "@/lib/utils";
 
-const DRAW_STATUS = ["None", "Open", "RandomRequested", "RandomFulfilled", "Finalized", "RolledOver"];
+const DRAW_STATUS = ["None", "Open", "RandomRequested", "RandomFulfilled", "Finalized", "RolledOver", "TimedOut"];
 
 type DrawSnapshot = {
   drawId: bigint;
@@ -285,6 +285,36 @@ export default function LotteryPage() {
     }
   }
 
+  async function timeoutDraw() {
+    if (!canTransact || activeDrawId <= 0n) return;
+    try {
+      setError("");
+      const lottery = new Contract(ADDRESSES.lotteryGame, lotteryGameAbi, wallet.signer);
+      setStatus("Timing out draw...");
+      const tx = await lottery.timeoutDraw(activeDrawId);
+      await tx.wait();
+      await loadDrawById(activeDrawId);
+      setStatus(`Draw timed out. Tx: ${tx.hash}`);
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
+  async function claimTimedOutRefund() {
+    if (!canTransact || activeDrawId <= 0n) return;
+    try {
+      setError("");
+      const lottery = new Contract(ADDRESSES.lotteryGame, lotteryGameAbi, wallet.signer);
+      setStatus("Claiming timeout refund...");
+      const tx = await lottery.claimTimedOutRefund(activeDrawId);
+      await tx.wait();
+      await loadDrawById(activeDrawId);
+      setStatus(`Timeout refund claimed. Tx: ${tx.hash}`);
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
   async function claimFaucet() {
     if (!canTransact || !tokenReady) return;
     try {
@@ -381,6 +411,12 @@ export default function LotteryPage() {
               </button>
               <button type="button" disabled={!canTransact} onClick={() => void finalizeDraw()}>
                 Finalize Draw
+              </button>
+              <button className="warn" type="button" disabled={!canTransact} onClick={() => void timeoutDraw()}>
+                Timeout Draw
+              </button>
+              <button className="secondary" type="button" disabled={!canTransact} onClick={() => void claimTimedOutRefund()}>
+                Claim Timeout Refund
               </button>
             </div>
           </article>

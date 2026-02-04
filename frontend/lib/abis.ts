@@ -27,6 +27,11 @@ export const lotteryGameAbi = [
   "function buyTickets(uint256 drawId, uint32 count) payable",
   "function startDraw(uint256 drawId)",
   "function finalizeDraw(uint256 drawId)",
+  "function timeoutDraw(uint256 drawId)",
+  "function claimTimedOutRefund(uint256 drawId)",
+  "function claimTimedOutRefundFor(uint256 drawId, address player)",
+  "function canTimeout(uint256 drawId) view returns (bool)",
+  "function canClaimTimedOutRefund(uint256 drawId, address player) view returns (bool)",
   "function draws(uint256 drawId) view returns (address token, uint96 ticketPrice, uint16 houseEdgeBps, uint32 startTime, uint32 endTime, uint8 status, uint256 requestId, uint256 randomWord, address winner, uint256 totalTickets, uint256 potAmount)",
   "function nextDrawId() view returns (uint256)",
   "function getCurrentPrize(uint256 drawId) view returns (uint256 grossPot, uint256 winnerPayout, uint256 houseTake)",
@@ -36,6 +41,8 @@ export const lotteryGameAbi = [
   "event LotteryRandomFulfilled(uint256 indexed drawId, uint256 indexed requestId, uint256 randomWord)",
   "event LotteryFinalized(uint256 indexed drawId, address indexed winner, uint256 winnerIndex, uint256 winnerPayout, uint256 houseTake)",
   "event LotteryRolledOver(uint256 indexed drawId, address indexed token, uint256 amount)",
+  "event LotteryTimedOut(uint256 indexed drawId, address indexed token, uint256 totalRefundable, uint256 carryReturned)",
+  "event LotteryTimeoutRefundClaimed(uint256 indexed drawId, address indexed player, uint256 amount)",
 ] as const;
 
 export const erc20Abi = [
@@ -46,4 +53,3 @@ export const erc20Abi = [
   "function symbol() view returns (string)",
   "function faucet()",
 ] as const;
-

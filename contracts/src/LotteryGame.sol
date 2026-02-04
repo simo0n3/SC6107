@@ -20,7 +20,8 @@ contract LotteryGame is Ownable2Step, Pausable, ReentrancyGuard, IVRFGame {
         RandomRequested,
         RandomFulfilled,
         Finalized,
-        RolledOver
+        RolledOver,
+        TimedOut
     }
 
     struct Draw {
@@ -48,6 +49,9 @@ contract LotteryGame is Ownable2Step, Pausable, ReentrancyGuard, IVRFGame {
     error DrawSoldOut(uint256 requestedTotal, uint256 maxAllowed);
     error DrawNotStarted(uint256 startTime, uint256 nowTs);
     error DrawNotEnded(uint256 endTime, uint256 nowTs);
+    error FulfillmentWaitNotExceeded(uint256 eligibleAt, uint256 nowTs);
+    error NoRefundAvailable(uint256 drawId, address player);
+    error RefundAlreadyClaimed(uint256 drawId, address player);
     error EthTransferFailed();
 
     ITreasuryVault public immutable vault;
@@ -55,11 +59,14 @@ contract LotteryGame is Ownable2Step, Pausable, ReentrancyGuard, IVRFGame {
 
     uint32 public maxTicketsPerTx = 50;
     uint32 public maxTicketsPerDraw = 10_000;
+    uint32 public maxWaitForFulfill = 1800;
     uint256 public nextDrawId;
 
     mapping(uint256 => Draw) public draws;
     mapping(uint256 => mapping(uint256 => address)) public ticketOwner;
     mapping(uint256 => mapping(address => uint256)) public ticketsOf;
+    mapping(uint256 => uint32) public randomRequestedAt;
+    mapping(uint256 => mapping(address => bool)) public timeoutRefundClaimed;
     mapping(uint256 => uint256) public requestIdToDrawId;
     mapping(address => uint256) public rolloverPotByToken;
 
@@ -90,8 +97,11 @@ contract LotteryGame is Ownable2Step, Pausable, ReentrancyGuard, IVRFGame {
         uint256 houseTake
     );
     event LotteryRolledOver(uint256 indexed drawId, address indexed token, uint256 amount);
+    event LotteryTimedOut(uint256 indexed drawId, address indexed token, uint256 totalRefundable, uint256 carryReturned);
+    event LotteryTimeoutRefundClaimed(uint256 indexed drawId, address indexed player, uint256 amount);
     event MaxTicketsPerTxUpdated(uint32 maxTicketsPerTx);
     event MaxTicketsPerDrawUpdated(uint32 maxTicketsPerDraw);
+    event MaxWaitForFulfillUpdated(uint32 maxWaitForFulfill);
 
     modifier onlyRouter() {
         if (msg.sender != address(vrfRouter)) revert Unauthorized();
@@ -184,6 +194,7 @@ contract LotteryGame is Ownable2Step, Pausable, ReentrancyGuard, IVRFGame {
         uint256 requestId = vrfRouter.requestRandom(drawId, 1);
         draw.requestId = requestId;
         draw.status = DrawStatus.RandomRequested;
+        randomRequestedAt[drawId] = uint32(block.timestamp);
         requestIdToDrawId[requestId] = drawId;
 
         emit LotteryRandomRequested(drawId, requestId);
@@ -233,11 +244,56 @@ contract LotteryGame is Ownable2Step, Pausable, ReentrancyGuard, IVRFGame {
         emit LotteryFinalized(drawId, winner, winnerIndex, winnerPayout, houseTake);
     }
 
+    function timeoutDraw(uint256 drawId) external whenNotPaused {
+        Draw storage draw = draws[drawId];
+        if (draw.status != DrawStatus.RandomRequested) revert InvalidState(draw.status);
+
+        uint256 requestedAt = randomRequestedAt[drawId];
+        uint256 eligibleAt = requestedAt + maxWaitForFulfill;
+        if (block.timestamp <= eligibleAt) {
+            revert FulfillmentWaitNotExceeded(eligibleAt, block.timestamp);
+        }
+
+        draw.status = DrawStatus.TimedOut;
+
+        uint256 totalRefundable = uint256(draw.ticketPrice) * draw.totalTickets;
+        if (totalRefundable > draw.potAmount) {
+            totalRefundable = draw.potAmount;
+        }
+        uint256 carryReturned = draw.potAmount - totalRefundable;
+        if (carryReturned > 0) {
+            rolloverPotByToken[draw.token] += carryReturned;
+        }
+
+        emit LotteryTimedOut(drawId, draw.token, totalRefundable, carryReturned);
+    }
+
+    function claimTimedOutRefund(uint256 drawId) external nonReentrant whenNotPaused {
+        _claimTimedOutRefund(drawId, msg.sender);
+    }
+
+    function claimTimedOutRefundFor(uint256 drawId, address player) external nonReentrant whenNotPaused {
+        _claimTimedOutRefund(drawId, player);
+    }
+
     function getCurrentPrize(uint256 drawId) external view returns (uint256 grossPot, uint256 winnerPayout, uint256 houseTake) {
         Draw memory draw = draws[drawId];
         grossPot = draw.potAmount;
         houseTake = (draw.potAmount * draw.houseEdgeBps) / 10_000;
         winnerPayout = draw.potAmount - houseTake;
+    }
+
+    function canTimeout(uint256 drawId) external view returns (bool) {
+        Draw memory draw = draws[drawId];
+        if (draw.status != DrawStatus.RandomRequested) return false;
+        return block.timestamp > uint256(randomRequestedAt[drawId]) + maxWaitForFulfill;
+    }
+
+    function canClaimTimedOutRefund(uint256 drawId, address player) external view returns (bool) {
+        Draw memory draw = draws[drawId];
+        if (draw.status != DrawStatus.TimedOut) return false;
+        if (timeoutRefundClaimed[drawId][player]) return false;
+        return ticketsOf[drawId][player] > 0;
     }
 
     function setMaxTicketsPerTx(uint32 maxTicketsPerTx_) external onlyOwner {
@@ -250,6 +306,12 @@ contract LotteryGame is Ownable2Step, Pausable, ReentrancyGuard, IVRFGame {
         if (maxTicketsPerDraw_ == 0) revert InvalidAmount();
         maxTicketsPerDraw = maxTicketsPerDraw_;
         emit MaxTicketsPerDrawUpdated(maxTicketsPerDraw_);
+    }
+
+    function setMaxWaitForFulfill(uint32 maxWaitForFulfill_) external onlyOwner {
+        if (maxWaitForFulfill_ == 0) revert InvalidAmount();
+        maxWaitForFulfill = maxWaitForFulfill_;
+        emit MaxWaitForFulfillUpdated(maxWaitForFulfill_);
     }
 
     function pause() external onlyOwner {
@@ -278,5 +340,21 @@ contract LotteryGame is Ownable2Step, Pausable, ReentrancyGuard, IVRFGame {
         if (msg.value != 0) revert InvalidAmount();
         IERC20(token).safeTransferFrom(msg.sender, address(vault), amount);
     }
-}
 
+    function _claimTimedOutRefund(uint256 drawId, address player) internal {
+        if (player == address(0)) revert InvalidAddress();
+
+        Draw storage draw = draws[drawId];
+        if (draw.status != DrawStatus.TimedOut) revert InvalidState(draw.status);
+        if (timeoutRefundClaimed[drawId][player]) revert RefundAlreadyClaimed(drawId, player);
+
+        uint256 ticketCount = ticketsOf[drawId][player];
+        if (ticketCount == 0) revert NoRefundAvailable(drawId, player);
+
+        timeoutRefundClaimed[drawId][player] = true;
+        uint256 refundAmount = uint256(draw.ticketPrice) * ticketCount;
+        vault.payout(draw.token, player, refundAmount);
+
+        emit LotteryTimeoutRefundClaimed(drawId, player, refundAmount);
+    }
+}

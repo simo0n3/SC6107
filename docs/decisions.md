@@ -35,6 +35,7 @@ This file records project decisions so implementation can continue without chat 
 ## 1.4 Failure policy
 
 - If VRF is unfulfilled over timeout, bet can be cancelled/refunded.
+- If lottery VRF is unfulfilled over timeout, draw can be marked timed out and ticket holders refunded.
 - Same bet must not trigger a second randomness request after first request.
 - Late callback after cancellation is ignored.
 
@@ -59,6 +60,7 @@ These are defaults, not immutable. They should be owner-configurable unless note
   - rollover policy: carry full pot to next draw of the same token
   - `MAX_TICKETS_PER_TX = 50`
   - `MAX_TICKETS_PER_DRAW = 10000` (owner-configurable safety cap)
+  - `maxWaitForFulfill = 30 minutes`
 - Bet limits:
   - min/max policy: global per token (shared by both games)
 - VRF:
