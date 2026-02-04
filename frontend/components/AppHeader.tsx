@@ -1,20 +1,59 @@
 "use client";
 
+import { BrowserProvider, Contract, isAddress } from "ethers";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { shortAddress } from "@/lib/utils";
-import { SEPOLIA_CHAIN_ID } from "@/lib/config";
+import { AddressLabel } from "@/components/AddressLabel";
+import { achievementNftAbi } from "@/lib/abis";
+import { ADDRESSES, SEPOLIA_CHAIN_ID } from "@/lib/config";
 
 type Props = {
   address: string;
   chainId: number | null;
+  provider: BrowserProvider | null;
   hasProvider: boolean;
   isSepolia: boolean;
   onConnect: () => Promise<void>;
+  onAddressCopied?: () => void;
 };
 
-export function AppHeader({ address, chainId, hasProvider, isSepolia, onConnect }: Props) {
+export function AppHeader({ address, chainId, provider, hasProvider, isSepolia, onConnect, onAddressCopied }: Props) {
   const pathname = usePathname();
+  const [hasAchievement, setHasAchievement] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+
+    async function loadAchievement() {
+      if (!provider || !address || !isSepolia || !isAddress(ADDRESSES.achievementNft)) {
+        if (active) setHasAchievement(false);
+        return;
+      }
+
+      try {
+        const nft = new Contract(ADDRESSES.achievementNft, achievementNftAbi, provider);
+        let unlocked = false;
+
+        try {
+          unlocked = Boolean(await nft.hasAchievement(address));
+        } catch {
+          const balance = await nft.balanceOf(address);
+          unlocked = balance > 0n;
+        }
+
+        if (active) setHasAchievement(unlocked);
+      } catch {
+        if (active) setHasAchievement(false);
+      }
+    }
+
+    void loadAchievement();
+
+    return () => {
+      active = false;
+    };
+  }, [provider, address, isSepolia]);
 
   function linkClass(href: string): string {
     return pathname === href ? "pill good" : "pill";
@@ -51,7 +90,8 @@ export function AppHeader({ address, chainId, hasProvider, isSepolia, onConnect 
             <span className={`pill ${isSepolia ? "good" : "warn"}`}>
               {isSepolia ? "Sepolia" : `Wrong network (${chainId ?? "?"})`}
             </span>
-            <span className="pill mono">{shortAddress(address)}</span>
+            <AddressLabel address={address} className="pill mono" onCopied={onAddressCopied} />
+            {hasAchievement && <span className="pill good">Achievement Unlocked</span>}
           </>
         )}
         {chainId !== null && chainId !== SEPOLIA_CHAIN_ID && (

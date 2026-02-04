@@ -125,6 +125,20 @@ select {
   color: var(--warning);
 }
 
+.address-label {
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+}
+
+button.address-label {
+  cursor: pointer;
+}
+
 .btn {
   height: 48px;
   border-radius: 14px;

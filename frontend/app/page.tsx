@@ -3,17 +3,22 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { Contract, isAddress } from "ethers";
+import { AddressLabel } from "@/components/AddressLabel";
 import { AppHeader } from "@/components/AppHeader";
 import { ClientOnly } from "@/components/ClientOnly";
+import { ToastStack } from "@/components/ToastStack";
+import { useToasts } from "@/hooks/useToasts";
 import { useWallet } from "@/hooks/useWallet";
 import { ADDRESSES } from "@/lib/config";
 import { diceGameAbi, lotteryGameAbi } from "@/lib/abis";
-import { explorerTx, formatAmount, shortAddress } from "@/lib/utils";
+import { explorerTx, formatAmount } from "@/lib/utils";
 
 type RecentResult = {
   id: string;
   game: "Dice" | "Lottery";
   outcome: string;
+  winnerAddress: string;
+  prize: string;
   atLabel: string;
   verifyTx: string;
   blockNumber: number;
@@ -21,6 +26,7 @@ type RecentResult = {
 
 export default function HomePage() {
   const wallet = useWallet();
+  const { toasts, pushToast } = useToasts();
   const [houseEdgeBps, setHouseEdgeBps] = useState(100);
   const [recentResults, setRecentResults] = useState<RecentResult[]>([]);
   const [statusText, setStatusText] = useState("Connect wallet to load live results.");
@@ -66,12 +72,13 @@ export default function HomePage() {
         for (const event of diceSettled.slice(-8)) {
           const args = (event as unknown as { args: { betId: bigint; won: boolean; payoutAmount: bigint } }).args;
           const betId = args.betId.toString();
-          const won = args.won;
           const payout = formatAmount(args.payoutAmount);
           merged.push({
             id: `dice-${betId}-${event.transactionHash}`,
             game: "Dice",
-            outcome: won ? `Win · Receive ${payout}` : "Lose",
+            outcome: args.won ? `Win | Receive ${payout}` : "Lose",
+            winnerAddress: "",
+            prize: "",
             verifyTx: diceFulfillTx.get(betId) ?? event.transactionHash,
             blockNumber: event.blockNumber,
           });
@@ -80,12 +87,13 @@ export default function HomePage() {
         for (const event of lotteryFinalized.slice(-8)) {
           const args = (event as unknown as { args: { drawId: bigint; winner: string; winnerPayout: bigint } }).args;
           const drawId = args.drawId.toString();
-          const winner = shortAddress(args.winner);
           const prize = formatAmount(args.winnerPayout);
           merged.push({
             id: `lottery-${drawId}-${event.transactionHash}`,
             game: "Lottery",
-            outcome: `Winner ${winner} · Prize ${prize}`,
+            outcome: "Winner",
+            winnerAddress: args.winner,
+            prize,
             verifyTx: lotteryFulfillTx.get(drawId) ?? event.transactionHash,
             blockNumber: event.blockNumber,
           });
@@ -118,12 +126,15 @@ export default function HomePage() {
   return (
     <ClientOnly fallback={<main className="page-shell" />}>
       <main className="page-shell">
+        <ToastStack items={toasts} />
         <AppHeader
           address={wallet.address}
           chainId={wallet.chainId}
+          provider={wallet.provider}
           hasProvider={wallet.hasProvider}
           isSepolia={wallet.isSepolia}
           onConnect={wallet.connect}
+          onAddressCopied={() => pushToast("Copied", "confirmed")}
         />
 
         <section className="card">
@@ -159,7 +170,14 @@ export default function HomePage() {
                 <div className="result-main">
                   <div className="result-top">
                     <span className="pill">{item.game}</span>
-                    <span>{item.outcome}</span>
+                    {item.winnerAddress ? (
+                      <span>
+                        Winner <AddressLabel address={item.winnerAddress} className="mono" onCopied={() => pushToast("Copied", "confirmed")} /> | Prize{" "}
+                        {item.prize}
+                      </span>
+                    ) : (
+                      <span>{item.outcome}</span>
+                    )}
                   </div>
                   <span className="helper">{item.atLabel}</span>
                 </div>

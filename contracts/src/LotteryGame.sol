@@ -10,6 +10,7 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {ITreasuryVault} from "./interfaces/ITreasuryVault.sol";
 import {IVRFRouter} from "./interfaces/IVRFRouter.sol";
 import {IVRFGame} from "./interfaces/IVRFGame.sol";
+import {IAchievementNFT} from "./interfaces/IAchievementNFT.sol";
 
 contract LotteryGame is Ownable2Step, Pausable, ReentrancyGuard, IVRFGame {
     using SafeERC20 for IERC20;
@@ -56,6 +57,7 @@ contract LotteryGame is Ownable2Step, Pausable, ReentrancyGuard, IVRFGame {
 
     ITreasuryVault public immutable vault;
     IVRFRouter public immutable vrfRouter;
+    IAchievementNFT public achievementNft;
 
     uint32 public maxTicketsPerTx = 50;
     uint32 public maxTicketsPerDraw = 10_000;
@@ -102,16 +104,18 @@ contract LotteryGame is Ownable2Step, Pausable, ReentrancyGuard, IVRFGame {
     event MaxTicketsPerTxUpdated(uint32 maxTicketsPerTx);
     event MaxTicketsPerDrawUpdated(uint32 maxTicketsPerDraw);
     event MaxWaitForFulfillUpdated(uint32 maxWaitForFulfill);
+    event AchievementNftUpdated(address indexed achievementNft);
 
     modifier onlyRouter() {
         if (msg.sender != address(vrfRouter)) revert Unauthorized();
         _;
     }
 
-    constructor(address vault_, address vrfRouter_) Ownable(msg.sender) {
+    constructor(address vault_, address vrfRouter_, address achievementNft_) Ownable(msg.sender) {
         if (vault_ == address(0) || vrfRouter_ == address(0)) revert InvalidAddress();
         vault = ITreasuryVault(vault_);
         vrfRouter = IVRFRouter(vrfRouter_);
+        achievementNft = IAchievementNFT(achievementNft_);
     }
 
     function createDraw(address token, uint96 ticketPrice, uint32 startTime, uint32 endTime, uint16 houseEdgeBps)
@@ -173,6 +177,7 @@ contract LotteryGame is Ownable2Step, Pausable, ReentrancyGuard, IVRFGame {
         draw.totalTickets = newTotalTickets;
         draw.potAmount += cost;
         ticketsOf[drawId][msg.sender] += count;
+        _tryMintAchievement(msg.sender);
 
         emit TicketsBought(drawId, msg.sender, count, cost, draw.totalTickets, draw.potAmount);
     }
@@ -314,6 +319,11 @@ contract LotteryGame is Ownable2Step, Pausable, ReentrancyGuard, IVRFGame {
         emit MaxWaitForFulfillUpdated(maxWaitForFulfill_);
     }
 
+    function setAchievementNft(address achievementNft_) external onlyOwner {
+        achievementNft = IAchievementNFT(achievementNft_);
+        emit AchievementNftUpdated(achievementNft_);
+    }
+
     function pause() external onlyOwner {
         _pause();
     }
@@ -356,5 +366,14 @@ contract LotteryGame is Ownable2Step, Pausable, ReentrancyGuard, IVRFGame {
         vault.payout(draw.token, player, refundAmount);
 
         emit LotteryTimeoutRefundClaimed(drawId, player, refundAmount);
+    }
+
+    function _tryMintAchievement(address player) internal {
+        IAchievementNFT nft = achievementNft;
+        if (address(nft) == address(0)) return;
+
+        try nft.mintOnce(player) {} catch {
+            // bonus path only; never block core game flow
+        }
     }
 }

@@ -7,6 +7,7 @@ import {VRFRouter} from "../src/VRFRouter.sol";
 import {DiceGame} from "../src/DiceGame.sol";
 import {LotteryGame} from "../src/LotteryGame.sol";
 import {TestERC20} from "../src/TestERC20.sol";
+import {AchievementNFT} from "../src/AchievementNFT.sol";
 
 contract Deploy is Script {
     struct DeployConfig {
@@ -34,6 +35,7 @@ contract Deploy is Script {
         address diceGame;
         address lotteryGame;
         address testToken;
+        address achievementNft;
     }
 
     function run() external returns (DeployedAddresses memory deployed) {
@@ -49,9 +51,11 @@ contract Deploy is Script {
             cfg.callbackGasLimit,
             cfg.nativePayment
         );
-        DiceGame dice =
-            new DiceGame(address(vault), address(router), cfg.diceHouseEdgeBps, cfg.revealWindowSeconds, cfg.maxWaitSeconds);
-        LotteryGame lottery = new LotteryGame(address(vault), address(router));
+        AchievementNFT achievementNft = new AchievementNFT();
+        DiceGame dice = new DiceGame(
+            address(vault), address(router), address(achievementNft), cfg.diceHouseEdgeBps, cfg.revealWindowSeconds, cfg.maxWaitSeconds
+        );
+        LotteryGame lottery = new LotteryGame(address(vault), address(router), address(achievementNft));
         TestERC20 testToken = new TestERC20();
 
         vault.setGameWhitelist(address(dice), true);
@@ -65,6 +69,9 @@ contract Deploy is Script {
         lottery.setMaxTicketsPerTx(cfg.maxTicketsPerTx);
         lottery.setMaxTicketsPerDraw(cfg.maxTicketsPerDraw);
 
+        achievementNft.grantRole(achievementNft.MINTER_ROLE(), address(dice));
+        achievementNft.grantRole(achievementNft.MINTER_ROLE(), address(lottery));
+
         vm.stopBroadcast();
 
         deployed = DeployedAddresses({
@@ -72,7 +79,8 @@ contract Deploy is Script {
             vrfRouter: address(router),
             diceGame: address(dice),
             lotteryGame: address(lottery),
-            testToken: address(testToken)
+            testToken: address(testToken),
+            achievementNft: address(achievementNft)
         });
     }
 

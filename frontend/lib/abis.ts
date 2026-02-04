@@ -59,3 +59,8 @@ export const erc20Abi = [
   "function symbol() view returns (string)",
   "function faucet()",
 ] as const;
+
+export const achievementNftAbi = [
+  "function hasAchievement(address user) view returns (bool)",
+  "function balanceOf(address owner) view returns (uint256)",
+] as const;

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Contract, Interface, ZeroAddress, isAddress, parseUnits } from "ethers";
+import { AddressLabel } from "@/components/AddressLabel";
 import { AppHeader } from "@/components/AppHeader";
 import { ClientOnly } from "@/components/ClientOnly";
 import { ToastStack } from "@/components/ToastStack";
@@ -9,7 +10,7 @@ import { useWallet } from "@/hooks/useWallet";
 import { useToasts } from "@/hooks/useToasts";
 import { ADDRESSES } from "@/lib/config";
 import { erc20Abi, lotteryGameAbi } from "@/lib/abis";
-import { explorerTx, formatAmount, isEthToken, shortAddress } from "@/lib/utils";
+import { explorerTx, formatAmount, isEthToken } from "@/lib/utils";
 
 type DrawSnapshot = {
   drawId: bigint;
@@ -371,9 +372,11 @@ export default function LotteryPage() {
         <AppHeader
           address={wallet.address}
           chainId={wallet.chainId}
+          provider={wallet.provider}
           hasProvider={wallet.hasProvider}
           isSepolia={wallet.isSepolia}
           onConnect={wallet.connect}
+          onAddressCopied={() => pushToast("Copied", "confirmed")}
         />
 
         <section className="card">
@@ -442,7 +445,9 @@ export default function LotteryPage() {
             <div className="number-grid" style={{ marginTop: "12px" }}>
               <div className="number-row">
                 <small>Winner</small>
-                <strong>{shortAddress(currentDraw.winner)}</strong>
+                <strong>
+                  <AddressLabel address={currentDraw.winner} className="mono" onCopied={() => pushToast("Copied", "confirmed")} />
+                </strong>
               </div>
               <div className="number-row">
                 <small>Prize</small>
@@ -477,7 +482,13 @@ export default function LotteryPage() {
                   <strong>Draw #{row.drawId.toString()}</strong>
                   <div className="list-meta">
                     {row.status === 4
-                      ? `Winner ${shortAddress(row.winner)} | Prize ${formatAmount(row.prize, selectedDrawTokenIsEth ? 18 : tokenDecimals, 4)} ${activeTokenSymbol}`
+                      ? (
+                          <>
+                            Winner{" "}
+                            <AddressLabel address={row.winner} className="mono" onCopied={() => pushToast("Copied", "confirmed")} />{" "}
+                            | Prize {formatAmount(row.prize, selectedDrawTokenIsEth ? 18 : tokenDecimals, 4)} {activeTokenSymbol}
+                          </>
+                        )
                       : DRAW_STATUS[row.status] ?? "Unknown"}
                   </div>
                 </div>

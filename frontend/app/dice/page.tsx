@@ -391,9 +391,11 @@ export default function DicePage() {
         <AppHeader
           address={wallet.address}
           chainId={wallet.chainId}
+          provider={wallet.provider}
           hasProvider={wallet.hasProvider}
           isSepolia={wallet.isSepolia}
           onConnect={wallet.connect}
+          onAddressCopied={() => pushToast("Copied", "confirmed")}
         />
 
         <section className="grid-2">

@@ -10,6 +10,7 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {ITreasuryVault} from "./interfaces/ITreasuryVault.sol";
 import {IVRFRouter} from "./interfaces/IVRFRouter.sol";
 import {IVRFGame} from "./interfaces/IVRFGame.sol";
+import {IAchievementNFT} from "./interfaces/IAchievementNFT.sol";
 
 contract DiceGame is Ownable2Step, Pausable, ReentrancyGuard, IVRFGame {
     using SafeERC20 for IERC20;
@@ -55,6 +56,7 @@ contract DiceGame is Ownable2Step, Pausable, ReentrancyGuard, IVRFGame {
 
     ITreasuryVault public immutable vault;
     IVRFRouter public immutable vrfRouter;
+    IAchievementNFT public achievementNft;
 
     uint16 public houseEdgeBps;
     uint32 public revealWindow;
@@ -80,6 +82,7 @@ contract DiceGame is Ownable2Step, Pausable, ReentrancyGuard, IVRFGame {
     event HouseEdgeUpdated(uint16 houseEdgeBps);
     event RevealWindowUpdated(uint32 revealWindow);
     event MaxWaitUpdated(uint32 maxWaitForFulfill);
+    event AchievementNftUpdated(address indexed achievementNft);
 
     modifier onlyRouter() {
         if (msg.sender != address(vrfRouter)) revert Unauthorized();
@@ -89,6 +92,7 @@ contract DiceGame is Ownable2Step, Pausable, ReentrancyGuard, IVRFGame {
     constructor(
         address vault_,
         address vrfRouter_,
+        address achievementNft_,
         uint16 houseEdgeBps_,
         uint32 revealWindow_,
         uint32 maxWaitForFulfill_
@@ -99,6 +103,7 @@ contract DiceGame is Ownable2Step, Pausable, ReentrancyGuard, IVRFGame {
 
         vault = ITreasuryVault(vault_);
         vrfRouter = IVRFRouter(vrfRouter_);
+        achievementNft = IAchievementNFT(achievementNft_);
         houseEdgeBps = houseEdgeBps_;
         revealWindow = revealWindow_;
         maxWaitForFulfill = maxWaitForFulfill_;
@@ -186,6 +191,7 @@ contract DiceGame is Ownable2Step, Pausable, ReentrancyGuard, IVRFGame {
         }
 
         bet.state = BetState.Settled;
+        _tryMintAchievement(msg.sender);
         emit BetSettled(betId, roll, won, payoutAmount);
     }
 
@@ -255,6 +261,11 @@ contract DiceGame is Ownable2Step, Pausable, ReentrancyGuard, IVRFGame {
         emit MaxWaitUpdated(maxWaitForFulfill_);
     }
 
+    function setAchievementNft(address achievementNft_) external onlyOwner {
+        achievementNft = IAchievementNFT(achievementNft_);
+        emit AchievementNftUpdated(achievementNft_);
+    }
+
     function pause() external onlyOwner {
         _pause();
     }
@@ -292,5 +303,14 @@ contract DiceGame is Ownable2Step, Pausable, ReentrancyGuard, IVRFGame {
 
         if (msg.value != 0) revert InvalidAmount();
         IERC20(token).safeTransferFrom(msg.sender, address(vault), amount);
+    }
+
+    function _tryMintAchievement(address player) internal {
+        IAchievementNFT nft = achievementNft;
+        if (address(nft) == address(0)) return;
+
+        try nft.mintOnce(player) {} catch {
+            // bonus path only; never block core game flow
+        }
     }
 }
