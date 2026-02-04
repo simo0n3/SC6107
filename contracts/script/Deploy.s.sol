@@ -77,7 +77,7 @@ contract Deploy is Script {
     }
 
     function _loadConfig() internal view returns (DeployConfig memory cfg) {
-        cfg.privateKey = vm.envUint("PRIVATE_KEY");
+        cfg.privateKey = _loadPrivateKey();
         cfg.subscriptionId = vm.envUint("VRF_SUBSCRIPTION_ID");
         cfg.vrfCoordinator = vm.envOr("VRF_COORDINATOR", address(0x9DdfaCa8183c41ad55329BdeeD9F6A8d53168B1B));
         cfg.keyHash = vm.envOr(
@@ -96,5 +96,14 @@ contract Deploy is Script {
         cfg.maxTokenBet = uint96(vm.envOr("MAX_TOKEN_BET", uint256(1000e18)));
         cfg.maxTicketsPerTx = uint32(vm.envOr("LOTTERY_MAX_TICKETS_PER_TX", uint256(50)));
         cfg.maxTicketsPerDraw = uint32(vm.envOr("LOTTERY_MAX_TICKETS_PER_DRAW", uint256(10_000)));
+    }
+
+    function _loadPrivateKey() internal view returns (uint256) {
+        string memory key = vm.envString("PRIVATE_KEY");
+        bytes memory keyBytes = bytes(key);
+        if (keyBytes.length == 64) {
+            key = string.concat("0x", key);
+        }
+        return vm.parseUint(key);
     }
 }

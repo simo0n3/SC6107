@@ -10,6 +10,8 @@ This folder is intentionally detailed so another AI model or developer can conti
   Component and data flow architecture (including VRF flow and trust boundaries).
 - `docs/decisions.md`  
   Confirmed decisions and runtime parameters (plus optional future tuning knobs).
+- `docs/deployments.md`  
+  Deployed contract addresses by network and post-deploy verification notes.
 - `docs/handoff.md`  
   Current project status, immediate next tasks, and execution commands for quick continuation.
 - `docs/security-analysis.md`  

@@ -122,6 +122,18 @@ npm run dev
 - Frontend lint: `npm run lint` ✅
 - Frontend build: `npm run build` ✅
 
+## Latest Sepolia Deployment (2026-02-04)
+
+- `TreasuryVault`: `0x2d09DEce7CCf6FD280a0ea0cfcab5b690A429c43`
+- `VRFRouter`: `0xb1de5Bd098C971ab6cCa7822Cc0f26f02308898f`
+- `DiceGame`: `0xF9B228D277504CE3DEFe6b9842cE9451d2835264`
+- `LotteryGame`: `0x6e2E7C97cCE30575FfD7aba674CB166d3BaA5e46`
+- `TestERC20`: `0x123aD88392C08eeEbFFDA8436b1f6266b08ff79d`
+
+Important:
+
+- Add `VRFRouter` as consumer in your Chainlink VRF subscription before running live rounds.
+
 ## Notes
 
 - Current phase intentionally defers tests/security tooling until full feature completion.

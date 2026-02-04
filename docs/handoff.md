@@ -38,6 +38,14 @@ Build validation completed:
 - Frontend: `npm run lint` passes
 - Frontend: `npm run build` passes
 
+Deployment completed on Sepolia:
+
+- `TreasuryVault`: `0x2d09DEce7CCf6FD280a0ea0cfcab5b690A429c43`
+- `VRFRouter`: `0xb1de5Bd098C971ab6cCa7822Cc0f26f02308898f`
+- `DiceGame`: `0xF9B228D277504CE3DEFe6b9842cE9451d2835264`
+- `LotteryGame`: `0x6e2E7C97cCE30575FfD7aba674CB166d3BaA5e46`
+- `TestERC20`: `0x123aD88392C08eeEbFFDA8436b1f6266b08ff79d`
+
 ## 2. Source of Truth
 
 Read in this order:
@@ -67,7 +75,7 @@ Read in this order:
 ## 4. Known Follow-up Tasks (Next Priority)
 
 1. Deploy to Sepolia and record deployed addresses in docs/README
-2. Configure frontend `.env.local` with deployed addresses
+2. Add `VRFRouter` as consumer in Chainlink VRF subscription
 3. Create at least one live draw for demo readiness
 4. Add tests (unit/integration/fuzz/invariant) and coverage report
 5. Run Slither and finalize `docs/security-analysis.md`
@@ -103,4 +111,3 @@ npm run dev
 - Full test suite and 80%+ coverage verification
 - Slither report and remediation log
 - Final gas benchmark documentation
-
