@@ -85,7 +85,7 @@ contract Deploy is Script {
             bytes32(0x787d74caea10b2b357790d5b5247c2f63d1d91572a9846f780606e4d953677ae)
         );
         cfg.requestConfirmations = uint16(vm.envOr("VRF_REQUEST_CONFIRMATIONS", uint256(3)));
-        cfg.callbackGasLimit = uint32(vm.envOr("VRF_CALLBACK_GAS_LIMIT", uint256(300_000)));
+        cfg.callbackGasLimit = uint32(vm.envOr("VRF_CALLBACK_GAS_LIMIT", uint256(120_000)));
         cfg.nativePayment = vm.envOr("VRF_NATIVE_PAYMENT", false);
         cfg.diceHouseEdgeBps = uint16(vm.envOr("DICE_HOUSE_EDGE_BPS", uint256(100)));
         cfg.revealWindowSeconds = uint32(vm.envOr("DICE_REVEAL_WINDOW", uint256(600)));

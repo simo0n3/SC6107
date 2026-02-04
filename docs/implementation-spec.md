@@ -312,7 +312,7 @@ Target version: VRF v2.5
 - LINK token: `0x779877A7B0D9E8603169DdbD7836e478b4624789`
 - Key hash (500 gwei lane): `0x787d74caea10b2b357790d5b5247c2f63d1d91572a9846f780606e4d953677ae`
 - `requestConfirmations`: default `3`
-- `callbackGasLimit`: default `300000`
+- `callbackGasLimit`: default `120000`
 - `numWords`: default `1`
 
 Subscription flow:

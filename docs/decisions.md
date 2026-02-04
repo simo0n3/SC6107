@@ -63,7 +63,7 @@ These are defaults, not immutable. They should be owner-configurable unless note
   - min/max policy: global per token (shared by both games)
 - VRF:
   - `requestConfirmations = 3`
-  - `callbackGasLimit = 300000`
+  - `callbackGasLimit = 120000`
   - `numWords = 1`
 
 ## 3. Decision Resolution Status
