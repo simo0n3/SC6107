@@ -1,127 +1,123 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { Contract, isAddress } from "ethers";
 import { AppHeader } from "@/components/AppHeader";
 import { ClientOnly } from "@/components/ClientOnly";
 import { useWallet } from "@/hooks/useWallet";
-import { ADDRESSES, LINK_TOKEN_SEPOLIA, SEPOLIA_EXPLORER } from "@/lib/config";
-import { treasuryVaultAbi, vrfRouterAbi, erc20Abi } from "@/lib/abis";
-import { formatAmount, shortAddress } from "@/lib/utils";
+import { ADDRESSES } from "@/lib/config";
+import { diceGameAbi, lotteryGameAbi } from "@/lib/abis";
+import { explorerTx, formatAmount, shortAddress } from "@/lib/utils";
 
-type VaultSnapshot = {
-  ethTotal: bigint;
-  ethReserved: bigint;
-  ethFree: bigint;
-  tokenTotal: bigint;
-  tokenReserved: bigint;
-  tokenFree: bigint;
-  minEthBet: bigint;
-  maxEthBet: bigint;
-  minTokenBet: bigint;
-  maxTokenBet: bigint;
-  tokenSymbol: string;
-};
-
-type VrfSnapshot = {
-  coordinator: string;
-  subscriptionId: bigint;
-  keyHash: string;
-  requestConfirmations: number;
-  callbackGasLimit: number;
-  nativePayment: boolean;
-};
-
-const emptyVault: VaultSnapshot = {
-  ethTotal: 0n,
-  ethReserved: 0n,
-  ethFree: 0n,
-  tokenTotal: 0n,
-  tokenReserved: 0n,
-  tokenFree: 0n,
-  minEthBet: 0n,
-  maxEthBet: 0n,
-  minTokenBet: 0n,
-  maxTokenBet: 0n,
-  tokenSymbol: "TOKEN",
+type RecentResult = {
+  id: string;
+  game: "Dice" | "Lottery";
+  outcome: string;
+  atLabel: string;
+  verifyTx: string;
+  blockNumber: number;
 };
 
 export default function HomePage() {
   const wallet = useWallet();
-  const [vaultData, setVaultData] = useState<VaultSnapshot>(emptyVault);
-  const [vrfData, setVrfData] = useState<VrfSnapshot | null>(null);
-  const [status, setStatus] = useState<string>("Connect wallet to read live state.");
+  const [houseEdgeBps, setHouseEdgeBps] = useState(100);
+  const [recentResults, setRecentResults] = useState<RecentResult[]>([]);
+  const [statusText, setStatusText] = useState("Connect wallet to load live results.");
 
   const envReady = useMemo(
-    () =>
-      isAddress(ADDRESSES.treasuryVault) &&
-      isAddress(ADDRESSES.vrfRouter) &&
-      isAddress(ADDRESSES.diceGame) &&
-      isAddress(ADDRESSES.lotteryGame),
+    () => isAddress(ADDRESSES.diceGame) && isAddress(ADDRESSES.lotteryGame) && isAddress(ADDRESSES.vrfRouter),
     [],
   );
 
   useEffect(() => {
-    async function load() {
+    async function loadLobbyData() {
       if (!wallet.provider || !wallet.isSepolia || !envReady) return;
-      try {
-        const vault = new Contract(ADDRESSES.treasuryVault, treasuryVaultAbi, wallet.provider);
-        const router = new Contract(ADDRESSES.vrfRouter, vrfRouterAbi, wallet.provider);
 
-        const [ethBalances, ethLimits, vrfCfg] = await Promise.all([
-          vault.getVaultBalances("0x0000000000000000000000000000000000000000"),
-          vault.getTokenBetLimits("0x0000000000000000000000000000000000000000"),
-          router.getVrfConfig(),
+      try {
+        const dice = new Contract(ADDRESSES.diceGame, diceGameAbi, wallet.provider);
+        const lottery = new Contract(ADDRESSES.lotteryGame, lotteryGameAbi, wallet.provider);
+
+        const [edgeRaw, latestBlock] = await Promise.all([dice.houseEdgeBps(), wallet.provider.getBlockNumber()]);
+        setHouseEdgeBps(Number(edgeRaw));
+
+        const fromBlock = Math.max(0, latestBlock - 200_000);
+        const [diceSettled, diceFulfilled, lotteryFinalized, lotteryFulfilled] = await Promise.all([
+          dice.queryFilter(dice.filters.BetSettled(), fromBlock, latestBlock),
+          dice.queryFilter(dice.filters.DiceRandomFulfilled(), fromBlock, latestBlock),
+          lottery.queryFilter(lottery.filters.LotteryFinalized(), fromBlock, latestBlock),
+          lottery.queryFilter(lottery.filters.LotteryRandomFulfilled(), fromBlock, latestBlock),
         ]);
 
-        let tokenBalances = [0n, 0n, 0n] as const;
-        let tokenLimits = [0n, 0n] as const;
-        let tokenSymbol = "TOKEN";
-
-        if (isAddress(ADDRESSES.testToken)) {
-          const token = new Contract(ADDRESSES.testToken, erc20Abi, wallet.provider);
-          [tokenBalances, tokenLimits, tokenSymbol] = await Promise.all([
-            vault.getVaultBalances(ADDRESSES.testToken),
-            vault.getTokenBetLimits(ADDRESSES.testToken),
-            token.symbol(),
-          ]);
+        const diceFulfillTx = new Map<string, string>();
+        for (const event of diceFulfilled) {
+          const args = (event as unknown as { args: { betId: bigint } }).args;
+          diceFulfillTx.set(args.betId.toString(), event.transactionHash);
         }
 
-        setVaultData({
-          ethTotal: ethBalances[0],
-          ethReserved: ethBalances[1],
-          ethFree: ethBalances[2],
-          tokenTotal: tokenBalances[0],
-          tokenReserved: tokenBalances[1],
-          tokenFree: tokenBalances[2],
-          minEthBet: ethLimits[0],
-          maxEthBet: ethLimits[1],
-          minTokenBet: tokenLimits[0],
-          maxTokenBet: tokenLimits[1],
-          tokenSymbol,
-        });
+        const lotteryFulfillTx = new Map<string, string>();
+        for (const event of lotteryFulfilled) {
+          const args = (event as unknown as { args: { drawId: bigint } }).args;
+          lotteryFulfillTx.set(args.drawId.toString(), event.transactionHash);
+        }
 
-        setVrfData({
-          coordinator: vrfCfg[0],
-          subscriptionId: vrfCfg[1],
-          keyHash: vrfCfg[2],
-          requestConfirmations: Number(vrfCfg[3]),
-          callbackGasLimit: Number(vrfCfg[4]),
-          nativePayment: vrfCfg[5],
-        });
+        const merged: Array<Omit<RecentResult, "atLabel">> = [];
 
-        setStatus("Live data loaded from Sepolia.");
+        for (const event of diceSettled.slice(-8)) {
+          const args = (event as unknown as { args: { betId: bigint; won: boolean; payoutAmount: bigint } }).args;
+          const betId = args.betId.toString();
+          const won = args.won;
+          const payout = formatAmount(args.payoutAmount);
+          merged.push({
+            id: `dice-${betId}-${event.transactionHash}`,
+            game: "Dice",
+            outcome: won ? `Win · Receive ${payout}` : "Lose",
+            verifyTx: diceFulfillTx.get(betId) ?? event.transactionHash,
+            blockNumber: event.blockNumber,
+          });
+        }
+
+        for (const event of lotteryFinalized.slice(-8)) {
+          const args = (event as unknown as { args: { drawId: bigint; winner: string; winnerPayout: bigint } }).args;
+          const drawId = args.drawId.toString();
+          const winner = shortAddress(args.winner);
+          const prize = formatAmount(args.winnerPayout);
+          merged.push({
+            id: `lottery-${drawId}-${event.transactionHash}`,
+            game: "Lottery",
+            outcome: `Winner ${winner} · Prize ${prize}`,
+            verifyTx: lotteryFulfillTx.get(drawId) ?? event.transactionHash,
+            blockNumber: event.blockNumber,
+          });
+        }
+
+        merged.sort((a, b) => b.blockNumber - a.blockNumber);
+        const top = merged.slice(0, 3);
+
+        const withTime = await Promise.all(
+          top.map(async (item) => {
+            const block = await wallet.provider!.getBlock(item.blockNumber);
+            const ts = block?.timestamp ?? 0;
+            return {
+              ...item,
+              atLabel: ts > 0 ? new Date(ts * 1000).toLocaleString() : "-",
+            };
+          }),
+        );
+
+        setRecentResults(withTime);
+        setStatusText(withTime.length > 0 ? "Latest on-chain outcomes." : "No recent outcomes yet.");
       } catch (err) {
-        setStatus(`Failed to load on-chain data: ${(err as Error).message}`);
+        setStatusText(`Failed to load lobby data: ${(err as Error).message}`);
       }
     }
 
-    void load();
+    void loadLobbyData();
   }, [wallet.provider, wallet.isSepolia, envReady]);
 
   return (
-    <ClientOnly fallback={<main className="app-shell" />}>
-      <main className="app-shell">
+    <ClientOnly fallback={<main className="page-shell" />}>
+      <main className="page-shell">
         <AppHeader
           address={wallet.address}
           chainId={wallet.chainId}
@@ -130,92 +126,49 @@ export default function HomePage() {
           onConnect={wallet.connect}
         />
 
-        <section className="grid">
-          <article className="card span-12">
-            <div className="title-row">
-              <h2>Protocol Overview</h2>
-              <span className="tag">MetaMask only</span>
-            </div>
-            <div className="kv">
-              <span>Status</span>
-              <span>{status}</span>
-              <span>TreasuryVault</span>
-              <code>{ADDRESSES.treasuryVault || "Missing NEXT_PUBLIC_TREASURY_VAULT"}</code>
-              <span>VRFRouter</span>
-              <code>{ADDRESSES.vrfRouter || "Missing NEXT_PUBLIC_VRF_ROUTER"}</code>
-              <span>DiceGame</span>
-              <code>{ADDRESSES.diceGame || "Missing NEXT_PUBLIC_DICE_GAME"}</code>
-              <span>LotteryGame</span>
-              <code>{ADDRESSES.lotteryGame || "Missing NEXT_PUBLIC_LOTTERY_GAME"}</code>
-              <span>Test ERC20</span>
-              <code>{ADDRESSES.testToken || "Optional: NEXT_PUBLIC_TEST_TOKEN"}</code>
-              <span>Chainlink LINK (Sepolia)</span>
-              <code>{LINK_TOKEN_SEPOLIA}</code>
-            </div>
-            {!envReady && <p className="status error">Please set contract addresses in `frontend/.env.local` first.</p>}
-          </article>
+        <section className="card">
+          <h1 className="hero-title">On-Chain Verifiable Random Games</h1>
+          <p className="hero-sub">Fair outcomes powered by Chainlink VRF on Sepolia.</p>
+          <div className="cta-row">
+            <Link className="btn" href="/dice">
+              Play Dice
+            </Link>
+            <Link className="btn secondary" href="/lottery">
+              Play Lottery
+            </Link>
+          </div>
+          <div className="pill-row">
+            <span className="pill">Network: Sepolia</span>
+            <span className="pill">House edge: {houseEdgeBps / 100}%</span>
+            <span className="pill good">Fairness: VRF Verified</span>
+          </div>
+          {!envReady && (
+            <p className="helper">Missing contract addresses in `.env.local`. Set dice, lottery, and router addresses first.</p>
+          )}
+        </section>
 
-          <article className="card span-6">
-            <h3>Vault Balances</h3>
-            <div className="kv">
-              <span>ETH total</span>
-              <span>{formatAmount(vaultData.ethTotal)} ETH</span>
-              <span>ETH reserved</span>
-              <span>{formatAmount(vaultData.ethReserved)} ETH</span>
-              <span>ETH free</span>
-              <span>{formatAmount(vaultData.ethFree)} ETH</span>
-              <span>{vaultData.tokenSymbol} total</span>
-              <span>{formatAmount(vaultData.tokenTotal)}</span>
-              <span>{vaultData.tokenSymbol} reserved</span>
-              <span>{formatAmount(vaultData.tokenReserved)}</span>
-              <span>{vaultData.tokenSymbol} free</span>
-              <span>{formatAmount(vaultData.tokenFree)}</span>
-            </div>
-          </article>
-
-          <article className="card span-6">
-            <h3>Global Bet Limits</h3>
-            <div className="kv">
-              <span>ETH min</span>
-              <span>{formatAmount(vaultData.minEthBet)} ETH</span>
-              <span>ETH max</span>
-              <span>{formatAmount(vaultData.maxEthBet)} ETH</span>
-              <span>{vaultData.tokenSymbol} min</span>
-              <span>{formatAmount(vaultData.minTokenBet)}</span>
-              <span>{vaultData.tokenSymbol} max</span>
-              <span>{formatAmount(vaultData.maxTokenBet)}</span>
-            </div>
-          </article>
-
-          <article className="card span-12">
-            <div className="title-row">
-              <h3>Verifiable Randomness Panel</h3>
-              {vrfData?.coordinator && (
-                <a
-                  className="tag"
-                  href={`${SEPOLIA_EXPLORER}/address/${vrfData.coordinator}`}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  {shortAddress(vrfData.coordinator)}
+        <section className="card">
+          <div className="inline" style={{ justifyContent: "space-between" }}>
+            <h3>Recent Results</h3>
+            <span className="helper">{statusText}</span>
+          </div>
+          <div className="result-list" style={{ marginTop: "12px" }}>
+            {recentResults.length === 0 && <p className="helper">No results yet.</p>}
+            {recentResults.map((item) => (
+              <article key={item.id} className="result-item">
+                <div className="result-main">
+                  <div className="result-top">
+                    <span className="pill">{item.game}</span>
+                    <span>{item.outcome}</span>
+                  </div>
+                  <span className="helper">{item.atLabel}</span>
+                </div>
+                <a className="btn ghost" href={explorerTx(item.verifyTx)} target="_blank" rel="noreferrer">
+                  Verify
                 </a>
-              )}
-            </div>
-            <div className="kv">
-              <span>Coordinator</span>
-              <code>{vrfData?.coordinator ?? "-"}</code>
-              <span>Subscription ID</span>
-              <code>{vrfData?.subscriptionId.toString() ?? "-"}</code>
-              <span>Key Hash</span>
-              <code>{vrfData?.keyHash ?? "-"}</code>
-              <span>Request confirmations</span>
-              <span>{vrfData?.requestConfirmations ?? "-"}</span>
-              <span>Callback gas limit</span>
-              <span>{vrfData?.callbackGasLimit ?? "-"}</span>
-              <span>Native payment</span>
-              <span>{vrfData ? (vrfData.nativePayment ? "true" : "false") : "-"}</span>
-            </div>
-          </article>
+              </article>
+            ))}
+          </div>
         </section>
       </main>
     </ClientOnly>

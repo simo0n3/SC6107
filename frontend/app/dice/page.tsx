@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AbiCoder,
   Contract,
@@ -14,10 +14,12 @@ import {
 } from "ethers";
 import { AppHeader } from "@/components/AppHeader";
 import { ClientOnly } from "@/components/ClientOnly";
+import { ToastStack } from "@/components/ToastStack";
 import { useWallet } from "@/hooks/useWallet";
-import { ADDRESSES, SEPOLIA_EXPLORER } from "@/lib/config";
+import { useToasts } from "@/hooks/useToasts";
+import { ADDRESSES } from "@/lib/config";
 import { diceGameAbi, erc20Abi, vrfRouterAbi } from "@/lib/abis";
-import { explorerTx, formatAmount, isEthToken, toDateTime } from "@/lib/utils";
+import { explorerTx, formatAmount, isEthToken } from "@/lib/utils";
 
 const BET_STATES = ["None", "Committed", "RandomRequested", "RandomFulfilled", "Settled", "Slashed", "Cancelled"];
 
@@ -28,22 +30,20 @@ type BetSnapshot = {
   amount: bigint;
   maxPayout: bigint;
   rollUnder: number;
-  createdAt: number;
-  requestedAt: number;
   revealDeadline: number;
-  commitHash: string;
   requestId: bigint;
   randomWord: bigint;
   state: number;
+  roll: number | null;
+  won: boolean | null;
+  payoutAmount: bigint;
   fulfillTxHash: string;
   settleTxHash: string;
 };
 
 type VrfInfo = {
-  coordinator: string;
   subscriptionId: bigint;
   keyHash: string;
-  requestConfirmations: number;
   callbackGasLimit: number;
 };
 
@@ -54,13 +54,13 @@ const emptyBet: BetSnapshot = {
   amount: 0n,
   maxPayout: 0n,
   rollUnder: 0,
-  createdAt: 0,
-  requestedAt: 0,
   revealDeadline: 0,
-  commitHash: "",
   requestId: 0n,
   randomWord: 0n,
   state: 0,
+  roll: null,
+  won: null,
+  payoutAmount: 0n,
   fulfillTxHash: "",
   settleTxHash: "",
 };
@@ -69,38 +69,101 @@ function saltStorageKey(chainId: number, gameAddress: string, betId: bigint): st
   return `dice-salt:${chainId}:${gameAddress.toLowerCase()}:${betId.toString()}`;
 }
 
+function parseError(err: unknown): string {
+  const msg = (err as { shortMessage?: string; message?: string })?.shortMessage ?? (err as Error)?.message ?? "Failed.";
+  if (msg.includes("user rejected")) return "Transaction cancelled in wallet.";
+  if (msg.includes("No valid salt")) return "Missing bet secret. Open debug mode (?debug=1) and paste your salt.";
+  if (msg.includes("CALL_EXCEPTION")) return "This action is not available for the current bet state.";
+  return msg;
+}
+
 export default function DicePage() {
   const wallet = useWallet();
+  const { toasts, pushToast } = useToasts();
+
   const [tokenChoice, setTokenChoice] = useState<"ETH" | "ERC20">("ETH");
   const [amountInput, setAmountInput] = useState("0.01");
   const [rollUnderInput, setRollUnderInput] = useState("49");
-  const [lookupBetIdInput, setLookupBetIdInput] = useState("");
-  const [manualSalt, setManualSalt] = useState("");
-  const [tokenSymbol, setTokenSymbol] = useState("TOKEN");
-  const [tokenDecimals, setTokenDecimals] = useState(18);
   const [latestBet, setLatestBet] = useState<BetSnapshot>(emptyBet);
-  const [status, setStatus] = useState("Ready.");
-  const [error, setError] = useState("");
+  const [tokenSymbol, setTokenSymbol] = useState("SC7");
+  const [tokenDecimals, setTokenDecimals] = useState(18);
+  const [houseEdgeBps, setHouseEdgeBps] = useState(100);
+  const [statusText, setStatusText] = useState("Place a bet to start.");
+  const [errorText, setErrorText] = useState("");
+  const [busyAction, setBusyAction] = useState<"place" | "reveal" | "refresh" | "cancel" | "slash" | "none">("none");
+  const [debugBetIdInput, setDebugBetIdInput] = useState("");
+  const [manualSalt, setManualSalt] = useState("");
   const [vrfInfo, setVrfInfo] = useState<VrfInfo | null>(null);
+  const [isOwner, setIsOwner] = useState(false);
+  const [debugMode, setDebugMode] = useState(false);
 
   const diceReady = isAddress(ADDRESSES.diceGame);
-  const routerReady = isAddress(ADDRESSES.vrfRouter);
   const tokenReady = isAddress(ADDRESSES.testToken);
+  const routerReady = isAddress(ADDRESSES.vrfRouter);
+  const canTransact = wallet.signer && wallet.isSepolia && diceReady;
+  const showDebug = debugMode || isOwner;
+
   const selectedTokenAddress = tokenChoice === "ETH" ? ZeroAddress : ADDRESSES.testToken;
 
-  const canTransact = wallet.signer && wallet.isSepolia && diceReady;
-  const activeBetId = useMemo(() => {
-    if (lookupBetIdInput.trim()) {
-      try {
-        return BigInt(lookupBetIdInput.trim());
-      } catch {
-        return latestBet.betId;
-      }
+  const winChance = useMemo(() => {
+    const parsed = Number(rollUnderInput);
+    if (!Number.isInteger(parsed) || parsed < 1 || parsed > 99) return 0;
+    return parsed;
+  }, [rollUnderInput]);
+
+  const expectedPayout = useMemo(() => {
+    try {
+      const decimals = tokenChoice === "ETH" ? 18 : tokenDecimals;
+      const amountWei = parseUnits(amountInput || "0", decimals);
+      if (amountWei <= 0n || winChance <= 0) return 0n;
+      const numerator = amountWei * BigInt(10_000 - houseEdgeBps) * 100n;
+      const denominator = BigInt(winChance) * 10_000n;
+      return numerator / denominator;
+    } catch {
+      return 0n;
     }
-    return latestBet.betId;
-  }, [lookupBetIdInput, latestBet.betId]);
+  }, [amountInput, tokenChoice, tokenDecimals, winChance, houseEdgeBps]);
+
+  const progressionStep = useMemo(() => {
+    if (latestBet.state === 0) return 0;
+    if (latestBet.state === 1) return 1;
+    if (latestBet.state === 2 || latestBet.state === 3) return 2;
+    return 3;
+  }, [latestBet.state]);
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  const roundStatus: "Waiting" | "Ready" | "Result" = useMemo(() => {
+    if (latestBet.state === 2) return "Waiting";
+    if (latestBet.state === 3 && nowSec <= latestBet.revealDeadline) return "Ready";
+    if (latestBet.state >= 4 || latestBet.state === 3) return "Result";
+    return "Waiting";
+  }, [latestBet.state, latestBet.revealDeadline, nowSec]);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    const query = new URLSearchParams(window.location.search);
+    setDebugMode(query.get("debug") === "1");
+  }, []);
+
+  useEffect(() => {
+    async function bootstrap() {
+      if (!wallet.provider || !diceReady) return;
+      try {
+        const diceRead = new Contract(ADDRESSES.diceGame, diceGameAbi, wallet.provider);
+        const edge = await diceRead.houseEdgeBps();
+        setHouseEdgeBps(Number(edge));
+
+        if (wallet.address) {
+          const owner = await diceRead.owner();
+          setIsOwner(owner.toLowerCase() === wallet.address.toLowerCase());
+        } else {
+          setIsOwner(false);
+        }
+      } catch {
+        // no-op
+      }
+    }
+
     async function loadTokenMeta() {
       if (!wallet.provider || !tokenReady) return;
       try {
@@ -110,89 +173,119 @@ export default function DicePage() {
         setTokenSymbol(symbol);
       } catch {
         setTokenDecimals(18);
-        setTokenSymbol("TOKEN");
+        setTokenSymbol("SC7");
       }
     }
-    void loadTokenMeta();
-  }, [wallet.provider, tokenReady]);
 
-  useEffect(() => {
-    async function loadVrfConfig() {
+    async function loadVrf() {
       if (!wallet.provider || !routerReady || !wallet.isSepolia) return;
       try {
         const router = new Contract(ADDRESSES.vrfRouter, vrfRouterAbi, wallet.provider);
         const cfg = await router.getVrfConfig();
         setVrfInfo({
-          coordinator: cfg[0],
           subscriptionId: cfg[1],
           keyHash: cfg[2],
-          requestConfirmations: Number(cfg[3]),
           callbackGasLimit: Number(cfg[4]),
         });
       } catch {
         setVrfInfo(null);
       }
     }
-    void loadVrfConfig();
-  }, [wallet.provider, wallet.isSepolia, routerReady]);
 
-  async function loadBetById(betId: bigint) {
+    void bootstrap();
+    void loadTokenMeta();
+    void loadVrf();
+  }, [wallet.provider, wallet.address, wallet.isSepolia, diceReady, tokenReady, routerReady]);
+
+  const loadBetById = useCallback(async (betId: bigint) => {
     if (!wallet.provider || !diceReady || betId <= 0n) return;
-    try {
-      const dice = new Contract(ADDRESSES.diceGame, diceGameAbi, wallet.provider);
-      const data = await dice.bets(betId);
-      const latestBlock = await wallet.provider.getBlockNumber();
-      const fromBlock = Math.max(0, latestBlock - 200_000);
 
-      const fulfilledEvents = await dice.queryFilter(dice.filters.DiceRandomFulfilled(betId), fromBlock, latestBlock);
-      const settledEvents = await dice.queryFilter(dice.filters.BetSettled(betId), fromBlock, latestBlock);
+    const dice = new Contract(ADDRESSES.diceGame, diceGameAbi, wallet.provider);
+    const data = await dice.bets(betId);
+    const latestBlock = await wallet.provider.getBlockNumber();
+    const fromBlock = Math.max(0, latestBlock - 200_000);
 
-      setLatestBet({
-        betId,
-        player: data.player,
-        token: data.token,
-        amount: data.amount,
-        maxPayout: data.maxPayout,
-        rollUnder: Number(data.rollUnder),
-        createdAt: Number(data.createdAt),
-        requestedAt: Number(data.requestedAt),
-        revealDeadline: Number(data.revealDeadline),
-        commitHash: data.commitHash,
-        requestId: data.requestId,
-        randomWord: data.randomWord,
-        state: Number(data.state),
-        fulfillTxHash: fulfilledEvents.length ? fulfilledEvents[fulfilledEvents.length - 1].transactionHash : "",
-        settleTxHash: settledEvents.length ? settledEvents[settledEvents.length - 1].transactionHash : "",
-      });
-      setStatus(`Loaded bet #${betId.toString()}.`);
-      setError("");
-    } catch (err) {
-      setError(`Load bet failed: ${(err as Error).message}`);
+    const [fulfilledEvents, settledEvents] = await Promise.all([
+      dice.queryFilter(dice.filters.DiceRandomFulfilled(betId), fromBlock, latestBlock),
+      dice.queryFilter(dice.filters.BetSettled(betId), fromBlock, latestBlock),
+    ]);
+
+    const settled =
+      settledEvents.length > 0
+        ? (settledEvents[settledEvents.length - 1] as unknown as {
+            args: { roll: bigint; won: boolean; payoutAmount: bigint };
+            transactionHash: string;
+          })
+        : null;
+
+    setLatestBet({
+      betId,
+      player: data.player,
+      token: data.token,
+      amount: data.amount,
+      maxPayout: data.maxPayout,
+      rollUnder: Number(data.rollUnder),
+      revealDeadline: Number(data.revealDeadline),
+      requestId: data.requestId,
+      randomWord: data.randomWord,
+      state: Number(data.state),
+      roll: settled ? Number(settled.args.roll) : null,
+      won: settled ? Boolean(settled.args.won) : null,
+      payoutAmount: settled ? (settled.args.payoutAmount as bigint) : 0n,
+      fulfillTxHash: fulfilledEvents.length > 0 ? fulfilledEvents[fulfilledEvents.length - 1].transactionHash : "",
+      settleTxHash: settled ? settled.transactionHash : "",
+    });
+    setStatusText(`Loaded bet #${betId.toString()}.`);
+    setErrorText("");
+  }, [wallet.provider, diceReady]);
+
+  useEffect(() => {
+    async function loadLatestBetForPlayer() {
+      if (!wallet.provider || !wallet.address || !wallet.isSepolia || !diceReady) return;
+
+      try {
+        const dice = new Contract(ADDRESSES.diceGame, diceGameAbi, wallet.provider);
+        const latestBlock = await wallet.provider.getBlockNumber();
+        const fromBlock = Math.max(0, latestBlock - 200_000);
+        const commits = await dice.queryFilter(dice.filters.BetCommitted(null, wallet.address, null), fromBlock, latestBlock);
+        if (commits.length === 0) return;
+
+        commits.sort((a, b) => {
+          if (a.blockNumber !== b.blockNumber) return a.blockNumber - b.blockNumber;
+          return 0;
+        });
+
+        const betId = (commits[commits.length - 1] as unknown as { args: { betId: bigint } }).args.betId;
+        setDebugBetIdInput(betId.toString());
+        await loadBetById(betId);
+      } catch {
+        // keep quiet in auto load
+      }
     }
-  }
+
+    void loadLatestBetForPlayer();
+  }, [wallet.provider, wallet.address, wallet.isSepolia, diceReady, loadBetById]);
 
   async function placeBet() {
     if (!canTransact || !wallet.address || !wallet.chainId) return;
     if (tokenChoice === "ERC20" && !tokenReady) {
-      setError("NEXT_PUBLIC_TEST_TOKEN is missing.");
+      setErrorText("SC7 token address is missing in environment config.");
       return;
     }
+
     try {
-      setError("");
-      setStatus("Preparing commitment...");
+      setBusyAction("place");
+      setErrorText("");
       const rollUnder = Number(rollUnderInput);
       const decimals = tokenChoice === "ETH" ? 18 : tokenDecimals;
       const amountWei = parseUnits(amountInput, decimals);
-      const limit = (1n << 96n) - 1n;
-      if (amountWei <= 0n || amountWei > limit) {
-        throw new Error("Amount out of uint96 range.");
-      }
+
+      if (amountWei <= 0n) throw new Error("Amount must be greater than zero.");
       if (!Number.isInteger(rollUnder) || rollUnder < 1 || rollUnder > 99) {
-        throw new Error("rollUnder must be between 1 and 99.");
+        throw new Error("Win chance must be between 1% and 99%.");
       }
 
-      const saltBytes = randomBytes(32);
-      const saltHex = hexlify(saltBytes);
+      const saltHex = hexlify(randomBytes(32));
       const encoder = AbiCoder.defaultAbiCoder();
       const commitHash = keccak256(
         encoder.encode(
@@ -202,24 +295,25 @@ export default function DicePage() {
       );
 
       const dice = new Contract(ADDRESSES.diceGame, diceGameAbi, wallet.signer);
-
       if (!isEthToken(selectedTokenAddress)) {
         const token = new Contract(ADDRESSES.testToken, erc20Abi, wallet.signer);
         const allowance = await token.allowance(wallet.address, ADDRESSES.diceGame);
         if (allowance < amountWei) {
-          setStatus("Approving ERC20 allowance...");
           const approveTx = await token.approve(ADDRESSES.diceGame, amountWei);
+          pushToast(`Tx sent: approve ${tokenSymbol}`, "sent");
           await approveTx.wait();
+          pushToast("Approval confirmed.", "confirmed");
         }
       }
 
-      setStatus("Submitting commitBet transaction...");
       const tx = await dice.commitBet(selectedTokenAddress, amountWei, rollUnder, commitHash, {
         value: isEthToken(selectedTokenAddress) ? amountWei : 0n,
       });
+      pushToast("Tx sent: Place Bet", "sent");
       const receipt = await tx.wait();
-      const iface = new Interface(diceGameAbi);
+      pushToast("Bet placed and randomness requested.", "confirmed");
 
+      const iface = new Interface(diceGameAbi);
       let betId = 0n;
       for (const log of receipt.logs) {
         try {
@@ -234,70 +328,93 @@ export default function DicePage() {
 
       if (betId > 0n) {
         localStorage.setItem(saltStorageKey(wallet.chainId, ADDRESSES.diceGame, betId), saltHex);
-        setLookupBetIdInput(betId.toString());
+        setDebugBetIdInput(betId.toString());
         await loadBetById(betId);
       }
-
-      setStatus(`Bet committed. Tx: ${tx.hash}`);
+      setStatusText("Bet placed. Waiting for randomness...");
     } catch (err) {
-      setError((err as Error).message);
+      const msg = parseError(err);
+      setErrorText(msg);
+      pushToast(`Failed: ${msg}`, "failed");
+    } finally {
+      setBusyAction("none");
     }
   }
 
-  async function revealBet() {
-    if (!canTransact || activeBetId <= 0n || !wallet.chainId) return;
+  async function revealAndSettle(useManualSalt: boolean) {
+    if (!canTransact || latestBet.betId <= 0n || !wallet.chainId) return;
+
     try {
-      setError("");
-      const storageSalt = localStorage.getItem(saltStorageKey(wallet.chainId, ADDRESSES.diceGame, activeBetId)) ?? "";
-      const salt = manualSalt.trim() || storageSalt;
-      if (!salt || !salt.startsWith("0x") || salt.length !== 66) {
-        throw new Error("No valid salt found. Use local salt or paste one manually.");
+      setBusyAction("reveal");
+      setErrorText("");
+      const storageSalt = localStorage.getItem(saltStorageKey(wallet.chainId, ADDRESSES.diceGame, latestBet.betId)) ?? "";
+      const candidate = useManualSalt ? manualSalt.trim() : storageSalt;
+      if (!candidate || !candidate.startsWith("0x") || candidate.length !== 66) {
+        throw new Error("No valid salt found. Open debug mode and input manual salt.");
       }
 
       const dice = new Contract(ADDRESSES.diceGame, diceGameAbi, wallet.signer);
-      setStatus(`Revealing bet #${activeBetId.toString()}...`);
-      const tx = await dice.revealAndSettle(activeBetId, salt);
+      const tx = await dice.revealAndSettle(latestBet.betId, candidate);
+      pushToast("Tx sent: Reveal & Settle", "sent");
       await tx.wait();
-      await loadBetById(activeBetId);
-      setStatus(`Reveal complete. Tx: ${tx.hash}`);
+      pushToast("Round settled.", "confirmed");
+      await loadBetById(latestBet.betId);
+      setStatusText("Round settled.");
     } catch (err) {
-      setError((err as Error).message);
+      const msg = parseError(err);
+      setErrorText(msg);
+      pushToast(`Failed: ${msg}`, "failed");
+    } finally {
+      setBusyAction("none");
     }
   }
 
-  async function slashBet() {
-    if (!canTransact || activeBetId <= 0n) return;
+  async function debugAction(action: "refresh" | "cancel" | "slash" | "load") {
+    if (!canTransact) return;
+    const betId = BigInt(debugBetIdInput || "0");
+    if (betId <= 0n) return;
+
     try {
-      setError("");
+      setBusyAction(action === "load" ? "refresh" : action);
+      setErrorText("");
+
+      if (action === "load") {
+        await loadBetById(betId);
+        return;
+      }
+
       const dice = new Contract(ADDRESSES.diceGame, diceGameAbi, wallet.signer);
-      setStatus(`Slashing expired bet #${activeBetId.toString()}...`);
-      const tx = await dice.slashExpired(activeBetId);
-      await tx.wait();
-      await loadBetById(activeBetId);
-      setStatus(`Slashed. Tx: ${tx.hash}`);
+      let txHash = "";
+      if (action === "cancel") {
+        const tx = await dice.cancelIfUnfulfilled(betId);
+        txHash = tx.hash;
+        pushToast("Tx sent: Cancel stale bet", "sent");
+        await tx.wait();
+      }
+      if (action === "slash") {
+        const tx = await dice.slashExpired(betId);
+        txHash = tx.hash;
+        pushToast("Tx sent: Slash expired", "sent");
+        await tx.wait();
+      }
+      if (txHash) pushToast("Transaction confirmed.", "confirmed");
+      await loadBetById(betId);
     } catch (err) {
-      setError((err as Error).message);
+      const msg = parseError(err);
+      setErrorText(msg);
+      pushToast(`Failed: ${msg}`, "failed");
+    } finally {
+      setBusyAction("none");
     }
   }
 
-  async function cancelBet() {
-    if (!canTransact || activeBetId <= 0n) return;
-    try {
-      setError("");
-      const dice = new Contract(ADDRESSES.diceGame, diceGameAbi, wallet.signer);
-      setStatus(`Cancelling stale bet #${activeBetId.toString()}...`);
-      const tx = await dice.cancelIfUnfulfilled(activeBetId);
-      await tx.wait();
-      await loadBetById(activeBetId);
-      setStatus(`Cancelled. Tx: ${tx.hash}`);
-    } catch (err) {
-      setError((err as Error).message);
-    }
-  }
+  const payoutSymbol = latestBet.token.toLowerCase() === ZeroAddress.toLowerCase() ? "ETH" : tokenSymbol;
+  const statusClass = roundStatus.toLowerCase();
 
   return (
-    <ClientOnly fallback={<main className="app-shell" />}>
-      <main className="app-shell">
+    <ClientOnly fallback={<main className="page-shell" />}>
+      <main className="page-shell">
+        <ToastStack items={toasts} />
         <AppHeader
           address={wallet.address}
           chainId={wallet.chainId}
@@ -306,12 +423,12 @@ export default function DicePage() {
           onConnect={wallet.connect}
         />
 
-        <section className="grid">
-          <article className="card span-6">
-            <h2>Place Dice Bet</h2>
-            <p>One-click flow: commit + request randomness.</p>
+        <section className="grid-2">
+          <article className="card">
+            <h2>Bet Slip</h2>
+            <p className="helper">Pick your token, amount, and win chance.</p>
 
-            <div className="form-grid">
+            <div className="field-grid">
               <div className="field">
                 <label>Token</label>
                 <select value={tokenChoice} onChange={(e) => setTokenChoice(e.target.value as "ETH" | "ERC20")}>
@@ -325,136 +442,183 @@ export default function DicePage() {
                 <label>Amount</label>
                 <input value={amountInput} onChange={(e) => setAmountInput(e.target.value)} placeholder="0.01" />
               </div>
-              <div className="field">
-                <label>rollUnder (1-99)</label>
-                <input value={rollUnderInput} onChange={(e) => setRollUnderInput(e.target.value)} placeholder="49" />
-              </div>
-              <div className="field">
-                <label>Selected token address</label>
-                <input value={selectedTokenAddress} readOnly className="mono" />
+            </div>
+
+            <div className="field" style={{ marginTop: "12px" }}>
+              <label>Win chance {winChance}%</label>
+              <div className="slider-wrap">
+                <input
+                  type="range"
+                  min={1}
+                  max={99}
+                  value={Math.max(1, Math.min(99, winChance || 49))}
+                  onChange={(e) => setRollUnderInput(e.target.value)}
+                />
+                <small className="helper">{winChance}% chance to win</small>
               </div>
             </div>
 
-            <div className="actions">
-              <button type="button" disabled={!canTransact} onClick={() => void placeBet()}>
-                Commit + Request
+            <div className="number-grid">
+              <div className="number-row">
+                <small>If win, receive</small>
+                <strong>
+                  {expectedPayout > 0n
+                    ? `${formatAmount(expectedPayout, tokenChoice === "ETH" ? 18 : tokenDecimals, 4)} ${tokenChoice === "ETH" ? "ETH" : tokenSymbol}`
+                    : "-"}
+                </strong>
+                <small>Incl. principal · House edge {(houseEdgeBps / 100).toFixed(2)}%</small>
+              </div>
+            </div>
+
+            <div style={{ marginTop: "12px" }}>
+              <button className="btn" type="button" disabled={!canTransact || busyAction !== "none"} onClick={() => void placeBet()}>
+                {busyAction === "place" ? "Waiting..." : "Place Bet"}
               </button>
             </div>
+
+            {latestBet.betId > 0n && (
+              <div className="progress">
+                <small className="helper">Progress</small>
+                <div className="progress-track">
+                  <span className={`progress-step ${progressionStep >= 1 ? "active" : ""}`}>Placed</span>
+                  <span className={`progress-step ${progressionStep >= 2 ? "active" : ""}`}>Randomness</span>
+                  <span className={`progress-step ${progressionStep >= 3 ? "active" : ""}`}>Result</span>
+                </div>
+              </div>
+            )}
           </article>
 
-          <article className="card span-6">
-            <h2>Manage Bet</h2>
-            <p>Load by bet ID, then reveal/cancel/slash.</p>
-            <div className="form-grid">
-              <div className="field">
-                <label>Bet ID</label>
-                <input
-                  value={lookupBetIdInput}
-                  onChange={(e) => setLookupBetIdInput(e.target.value)}
-                  placeholder="e.g. 1"
-                />
-              </div>
-              <div className="field">
-                <label>Manual Salt (optional)</label>
-                <input
-                  value={manualSalt}
-                  onChange={(e) => setManualSalt(e.target.value)}
-                  placeholder="0x... (66 chars)"
-                  className="mono"
-                />
-              </div>
+          <article className="card">
+            <div className="inline" style={{ justifyContent: "space-between" }}>
+              <h2>Current Round</h2>
+              <span className={`status-badge ${statusClass}`}>{roundStatus}</span>
             </div>
+            <p className="helper">{latestBet.betId > 0n ? `Bet #${latestBet.betId.toString()}` : "No active round yet."}</p>
 
-            <div className="actions">
-              <button className="secondary" type="button" onClick={() => void loadBetById(activeBetId)}>
-                Refresh Bet
-              </button>
-              <button type="button" disabled={!canTransact} onClick={() => void revealBet()}>
-                Reveal + Settle
-              </button>
-              <button className="warn" type="button" disabled={!canTransact} onClick={() => void cancelBet()}>
-                Cancel If Stale
-              </button>
-              <button className="warn" type="button" disabled={!canTransact} onClick={() => void slashBet()}>
-                Slash Expired
-              </button>
-            </div>
-          </article>
+            {roundStatus === "Waiting" && (
+              <div className="number-grid" style={{ marginTop: "16px" }}>
+                <div className="number-row">
+                  <div className="inline">
+                    <span className="spinner" />
+                    <span>Waiting for randomness...</span>
+                  </div>
+                </div>
+              </div>
+            )}
 
-          <article className="card span-12">
-            <div className="title-row">
-              <h3>Bet Detail</h3>
-              <span className="tag">{BET_STATES[latestBet.state] ?? "Unknown"}</span>
-            </div>
-            <div className="kv">
-              <span>Bet ID</span>
-              <span>{latestBet.betId.toString()}</span>
-              <span>Player</span>
-              <code>{latestBet.player || "-"}</code>
-              <span>Token</span>
-              <code>{latestBet.token}</code>
-              <span>Amount</span>
-              <span>
-                {formatAmount(
-                  latestBet.amount,
-                  latestBet.token.toLowerCase() === ZeroAddress.toLowerCase() ? 18 : tokenDecimals,
-                )}{" "}
-                {latestBet.token.toLowerCase() === ZeroAddress.toLowerCase() ? "ETH" : tokenSymbol}
-              </span>
-              <span>rollUnder</span>
-              <span>{latestBet.rollUnder || "-"}</span>
-              <span>Request ID</span>
-              <code>{latestBet.requestId.toString()}</code>
-              <span>Random Word</span>
-              <code>{latestBet.randomWord.toString()}</code>
-              <span>Reveal deadline</span>
-              <span>{toDateTime(latestBet.revealDeadline)}</span>
-              <span>Fulfill Tx</span>
-              <span>
+            {roundStatus === "Ready" && (
+              <div style={{ marginTop: "14px" }}>
+                <button
+                  className="btn"
+                  type="button"
+                  disabled={!canTransact || busyAction !== "none"}
+                  onClick={() => void revealAndSettle(false)}
+                >
+                  {busyAction === "reveal" ? "Waiting..." : "Reveal & Settle"}
+                </button>
+                <p className="helper" style={{ marginTop: "8px" }}>
+                  Reveal deadline: {latestBet.revealDeadline ? new Date(latestBet.revealDeadline * 1000).toLocaleString() : "-"}
+                </p>
+              </div>
+            )}
+
+            {roundStatus === "Result" && (
+              <div className="number-grid" style={{ marginTop: "12px" }}>
+                <div className="number-row">
+                  <small>Roll</small>
+                  <strong>{latestBet.roll ?? "-"}</strong>
+                </div>
+                <div className="number-row">
+                  <small>Outcome</small>
+                  <strong>
+                    {latestBet.state === 4
+                      ? latestBet.won
+                        ? "Win"
+                        : "Lose"
+                      : latestBet.state === 5
+                        ? "Expired"
+                        : latestBet.state === 6
+                          ? "Refunded"
+                          : "Pending"}
+                  </strong>
+                </div>
+                <div className="number-row">
+                  <small>Payout</small>
+                  <strong>
+                    {latestBet.state === 4 && latestBet.won
+                      ? `+${formatAmount(latestBet.payoutAmount, latestBet.token === ZeroAddress ? 18 : tokenDecimals, 4)} ${payoutSymbol}`
+                      : "0"}
+                  </strong>
+                </div>
+              </div>
+            )}
+
+            <details className="verify">
+              <summary>Verify fairness</summary>
+              <div className="verify-body">
                 {latestBet.fulfillTxHash ? (
                   <a href={explorerTx(latestBet.fulfillTxHash)} target="_blank" rel="noreferrer">
-                    {latestBet.fulfillTxHash}
+                    Fulfill Tx (Etherscan)
                   </a>
                 ) : (
-                  "-"
+                  <span className="helper">Fulfill tx not available yet.</span>
                 )}
-              </span>
-              <span>Settle Tx</span>
-              <span>
-                {latestBet.settleTxHash ? (
-                  <a href={explorerTx(latestBet.settleTxHash)} target="_blank" rel="noreferrer">
-                    {latestBet.settleTxHash}
-                  </a>
-                ) : (
-                  "-"
-                )}
-              </span>
-            </div>
-          </article>
-
-          <article className="card span-12">
-            <h3>Verifiable Randomness Data</h3>
-            <div className="kv">
-              <span>Coordinator</span>
-              <code>{vrfInfo?.coordinator ?? "-"}</code>
-              <span>Subscription ID</span>
-              <code>{vrfInfo?.subscriptionId.toString() ?? "-"}</code>
-              <span>Key Hash</span>
-              <code>{vrfInfo?.keyHash ?? "-"}</code>
-              <span>Request confirmations</span>
-              <span>{vrfInfo?.requestConfirmations ?? "-"}</span>
-              <span>Callback gas limit</span>
-              <span>{vrfInfo?.callbackGasLimit ?? "-"}</span>
-              <span>Dice address</span>
-              <a href={`${SEPOLIA_EXPLORER}/address/${ADDRESSES.diceGame}`} target="_blank" rel="noreferrer">
-                {ADDRESSES.diceGame || "-"}
-              </a>
-            </div>
+              </div>
+            </details>
           </article>
         </section>
 
-        {error && <p className="status error">{error}</p>}
-        {!error && <p className="status success">{status}</p>}
+        {showDebug && (
+          <section className="card debug">
+            <h3>Debug / Admin</h3>
+            <p className="helper">Visible because `?debug=1` is set or wallet is contract owner.</p>
+            <div className="field-grid">
+              <div className="field">
+                <label>Bet ID</label>
+                <input value={debugBetIdInput} onChange={(e) => setDebugBetIdInput(e.target.value)} placeholder="e.g. 2" />
+              </div>
+              <div className="field">
+                <label>Manual Salt</label>
+                <input value={manualSalt} onChange={(e) => setManualSalt(e.target.value)} placeholder="0x... (66 chars)" className="mono" />
+              </div>
+            </div>
+            <div className="cta-row">
+              <button className="btn secondary" type="button" onClick={() => void debugAction("load")} disabled={busyAction !== "none"}>
+                Load Bet
+              </button>
+              <button className="btn" type="button" onClick={() => void revealAndSettle(true)} disabled={busyAction !== "none"}>
+                Reveal with Manual Salt
+              </button>
+              <button className="btn danger" type="button" onClick={() => void debugAction("cancel")} disabled={busyAction !== "none"}>
+                Cancel If Stale
+              </button>
+              <button className="btn danger" type="button" onClick={() => void debugAction("slash")} disabled={busyAction !== "none"}>
+                Slash Expired
+              </button>
+            </div>
+            <div className="field-grid">
+              <div className="field">
+                <label>Bet state</label>
+                <input readOnly value={BET_STATES[latestBet.state] ?? "Unknown"} />
+              </div>
+              <div className="field">
+                <label>VRF subscription</label>
+                <input readOnly value={vrfInfo?.subscriptionId?.toString() ?? "-"} className="mono" />
+              </div>
+              <div className="field">
+                <label>Key hash</label>
+                <input readOnly value={vrfInfo?.keyHash ?? "-"} className="mono" />
+              </div>
+              <div className="field">
+                <label>Callback gas</label>
+                <input readOnly value={vrfInfo?.callbackGasLimit?.toString() ?? "-"} className="mono" />
+              </div>
+            </div>
+          </section>
+        )}
+
+        {errorText && <p className="helper" style={{ color: "#ff9aa8" }}>{errorText}</p>}
+        {!errorText && <p className="helper">{statusText}</p>}
       </main>
     </ClientOnly>
   );

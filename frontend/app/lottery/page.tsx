@@ -1,93 +1,210 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Contract, Interface, ZeroAddress, isAddress, parseUnits } from "ethers";
 import { AppHeader } from "@/components/AppHeader";
 import { ClientOnly } from "@/components/ClientOnly";
+import { ToastStack } from "@/components/ToastStack";
 import { useWallet } from "@/hooks/useWallet";
-import { ADDRESSES, SEPOLIA_EXPLORER } from "@/lib/config";
+import { useToasts } from "@/hooks/useToasts";
+import { ADDRESSES } from "@/lib/config";
 import { erc20Abi, lotteryGameAbi, vrfRouterAbi } from "@/lib/abis";
-import { explorerTx, formatAmount, isEthToken, toDateTime } from "@/lib/utils";
-
-const DRAW_STATUS = ["None", "Open", "RandomRequested", "RandomFulfilled", "Finalized", "RolledOver", "TimedOut"];
+import { explorerTx, formatAmount, isEthToken, shortAddress } from "@/lib/utils";
 
 type DrawSnapshot = {
   drawId: bigint;
   token: string;
   ticketPrice: bigint;
   houseEdgeBps: number;
-  startTime: number;
   endTime: number;
   status: number;
   requestId: bigint;
-  randomWord: bigint;
   winner: string;
   totalTickets: bigint;
   potAmount: bigint;
-  grossPot: bigint;
   winnerPayout: bigint;
-  houseTake: bigint;
   fulfillTxHash: string;
   finalizeTxHash: string;
 };
 
+type RecentDraw = {
+  drawId: bigint;
+  winner: string;
+  prize: bigint;
+  status: number;
+  verifyTxHash: string;
+};
+
 type VrfInfo = {
-  coordinator: string;
   subscriptionId: bigint;
   keyHash: string;
+  callbackGasLimit: number;
 };
+
+const DRAW_STATUS = ["None", "Open", "RandomRequested", "RandomFulfilled", "Finalized", "RolledOver", "TimedOut"];
 
 const emptyDraw: DrawSnapshot = {
   drawId: 0n,
   token: ZeroAddress,
   ticketPrice: 0n,
   houseEdgeBps: 0,
-  startTime: 0,
   endTime: 0,
   status: 0,
   requestId: 0n,
-  randomWord: 0n,
   winner: "",
   totalTickets: 0n,
   potAmount: 0n,
-  grossPot: 0n,
   winnerPayout: 0n,
-  houseTake: 0n,
   fulfillTxHash: "",
   finalizeTxHash: "",
 };
 
+function parseError(err: unknown): string {
+  const msg = (err as { shortMessage?: string; message?: string })?.shortMessage ?? (err as Error)?.message ?? "Failed.";
+  if (msg.includes("user rejected")) return "Transaction cancelled in wallet.";
+  if (msg.includes("CALL_EXCEPTION")) return "This action is not available in the current draw state.";
+  return msg;
+}
+
 export default function LotteryPage() {
   const wallet = useWallet();
+  const { toasts, pushToast } = useToasts();
 
-  const [drawIdInput, setDrawIdInput] = useState("");
-  const [ticketCountInput, setTicketCountInput] = useState("1");
+  const [currentDraw, setCurrentDraw] = useState<DrawSnapshot>(emptyDraw);
+  const [recentDraws, setRecentDraws] = useState<RecentDraw[]>([]);
+  const [tokenSymbol, setTokenSymbol] = useState("SC7");
+  const [tokenDecimals, setTokenDecimals] = useState(18);
+  const [ticketCount, setTicketCount] = useState(1);
+  const [statusText, setStatusText] = useState("Load a draw to start.");
+  const [errorText, setErrorText] = useState("");
+  const [busyAction, setBusyAction] = useState<"none" | "buy" | "start" | "finalize" | "timeout" | "refund" | "refresh" | "create">(
+    "none",
+  );
+  const [vrfInfo, setVrfInfo] = useState<VrfInfo | null>(null);
+  const [isOwner, setIsOwner] = useState(false);
+
+  const [debugDrawIdInput, setDebugDrawIdInput] = useState("");
   const [createTokenChoice, setCreateTokenChoice] = useState<"ETH" | "ERC20">("ETH");
-  const [createTicketPriceInput, setCreateTicketPriceInput] = useState("0.005");
+  const [createTicketPriceInput, setCreateTicketPriceInput] = useState("10");
   const [createEndMinutesInput, setCreateEndMinutesInput] = useState("5");
   const [createHouseEdgeInput, setCreateHouseEdgeInput] = useState("100");
-  const [tokenSymbol, setTokenSymbol] = useState("TOKEN");
-  const [tokenDecimals, setTokenDecimals] = useState(18);
-  const [draw, setDraw] = useState<DrawSnapshot>(emptyDraw);
-  const [status, setStatus] = useState("Ready.");
-  const [error, setError] = useState("");
-  const [vrfInfo, setVrfInfo] = useState<VrfInfo | null>(null);
+  const [debugMode, setDebugMode] = useState(false);
 
   const lotteryReady = isAddress(ADDRESSES.lotteryGame);
   const tokenReady = isAddress(ADDRESSES.testToken);
   const routerReady = isAddress(ADDRESSES.vrfRouter);
   const canTransact = wallet.signer && wallet.isSepolia && lotteryReady;
+  const showDebug = debugMode || isOwner;
+  const selectedDrawTokenIsEth = currentDraw.token.toLowerCase() === ZeroAddress.toLowerCase();
+  const activeTokenSymbol = selectedDrawTokenIsEth ? "ETH" : tokenSymbol;
 
-  const activeDrawId = useMemo(() => {
-    if (drawIdInput.trim()) {
-      try {
-        return BigInt(drawIdInput.trim());
-      } catch {
-        return draw.drawId;
-      }
+  const nowSec = Math.floor(Date.now() / 1000);
+  const countdownLabel = useMemo(() => {
+    if (!currentDraw.endTime) return "-";
+    const remaining = currentDraw.endTime - nowSec;
+    if (remaining <= 0) return "00:00";
+    const mins = Math.floor(remaining / 60)
+      .toString()
+      .padStart(2, "0");
+    const secs = Math.floor(remaining % 60)
+      .toString()
+      .padStart(2, "0");
+    return `${mins}:${secs}`;
+  }, [currentDraw.endTime, nowSec]);
+
+  const canBuy = currentDraw.status === 1 && nowSec < currentDraw.endTime;
+  const canStart = currentDraw.status === 1 && nowSec >= currentDraw.endTime;
+  const canFinalize = currentDraw.status === 3;
+  const isWaitingRandomness = currentDraw.status === 2;
+  const isFinalized = currentDraw.status === 4;
+  const isTimedOut = currentDraw.status === 6;
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const query = new URLSearchParams(window.location.search);
+    setDebugMode(query.get("debug") === "1");
+  }, []);
+
+  const loadDrawById = useCallback(async (drawId: bigint) => {
+    if (!wallet.provider || !lotteryReady || drawId <= 0n) return;
+
+    const lottery = new Contract(ADDRESSES.lotteryGame, lotteryGameAbi, wallet.provider);
+    const [info, prize, latestBlock] = await Promise.all([
+      lottery.draws(drawId),
+      lottery.getCurrentPrize(drawId),
+      wallet.provider.getBlockNumber(),
+    ]);
+    const fromBlock = Math.max(0, latestBlock - 200_000);
+
+    const [fulfilledEvents, finalizedEvents] = await Promise.all([
+      lottery.queryFilter(lottery.filters.LotteryRandomFulfilled(drawId), fromBlock, latestBlock),
+      lottery.queryFilter(lottery.filters.LotteryFinalized(drawId), fromBlock, latestBlock),
+    ]);
+
+    setCurrentDraw({
+      drawId,
+      token: info.token,
+      ticketPrice: info.ticketPrice,
+      houseEdgeBps: Number(info.houseEdgeBps),
+      endTime: Number(info.endTime),
+      status: Number(info.status),
+      requestId: info.requestId,
+      winner: info.winner,
+      totalTickets: info.totalTickets,
+      potAmount: info.potAmount,
+      winnerPayout: prize[1],
+      fulfillTxHash: fulfilledEvents.length > 0 ? fulfilledEvents[fulfilledEvents.length - 1].transactionHash : "",
+      finalizeTxHash: finalizedEvents.length > 0 ? finalizedEvents[finalizedEvents.length - 1].transactionHash : "",
+    });
+
+    setStatusText(`Loaded draw #${drawId.toString()}.`);
+    setErrorText("");
+  }, [wallet.provider, lotteryReady]);
+
+  const loadRecentDraws = useCallback(async (latestDrawId: bigint) => {
+    if (!wallet.provider || !lotteryReady || latestDrawId <= 0n) return;
+
+    const lottery = new Contract(ADDRESSES.lotteryGame, lotteryGameAbi, wallet.provider);
+    const latestBlock = await wallet.provider.getBlockNumber();
+    const fromBlock = Math.max(0, latestBlock - 200_000);
+
+    const [fulfilledEvents, finalizedEvents] = await Promise.all([
+      lottery.queryFilter(lottery.filters.LotteryRandomFulfilled(), fromBlock, latestBlock),
+      lottery.queryFilter(lottery.filters.LotteryFinalized(), fromBlock, latestBlock),
+    ]);
+
+    const fulfillMap = new Map<string, string>();
+    for (const event of fulfilledEvents) {
+      const args = (event as unknown as { args: { drawId: bigint } }).args;
+      fulfillMap.set(args.drawId.toString(), event.transactionHash);
     }
-    return draw.drawId;
-  }, [drawIdInput, draw.drawId]);
+
+    const finalizedMap = new Map<string, { winner: string; prize: bigint }>();
+    for (const event of finalizedEvents) {
+      const args = (event as unknown as { args: { drawId: bigint; winner: string; winnerPayout: bigint } }).args;
+      finalizedMap.set(args.drawId.toString(), {
+        winner: args.winner,
+        prize: args.winnerPayout,
+      });
+    }
+
+    const rows: RecentDraw[] = [];
+    const minDrawId = latestDrawId > 5n ? latestDrawId - 4n : 1n;
+    for (let drawId = latestDrawId; drawId >= minDrawId; drawId--) {
+      const info = await lottery.draws(drawId);
+      const key = drawId.toString();
+      const fin = finalizedMap.get(key);
+      rows.push({
+        drawId,
+        winner: fin?.winner ?? info.winner,
+        prize: fin?.prize ?? 0n,
+        status: Number(info.status),
+        verifyTxHash: fulfillMap.get(key) ?? "",
+      });
+      if (drawId === 1n) break;
+    }
+    setRecentDraws(rows);
+  }, [wallet.provider, lotteryReady]);
 
   useEffect(() => {
     async function loadTokenMeta() {
@@ -99,104 +216,152 @@ export default function LotteryPage() {
         setTokenSymbol(symbol);
       } catch {
         setTokenDecimals(18);
-        setTokenSymbol("TOKEN");
+        setTokenSymbol("SC7");
       }
     }
-    void loadTokenMeta();
-  }, [wallet.provider, tokenReady]);
 
-  useEffect(() => {
-    async function loadVrfConfig() {
-      if (!wallet.provider || !routerReady || !wallet.isSepolia) return;
+    async function loadOwnerAndVrf() {
+      if (!wallet.provider || !lotteryReady) return;
+      try {
+        const lottery = new Contract(ADDRESSES.lotteryGame, lotteryGameAbi, wallet.provider);
+        if (wallet.address) {
+          const owner = await lottery.owner();
+          setIsOwner(owner.toLowerCase() === wallet.address.toLowerCase());
+        } else {
+          setIsOwner(false);
+        }
+      } catch {
+        setIsOwner(false);
+      }
+
+      if (!routerReady || !wallet.isSepolia) return;
       try {
         const router = new Contract(ADDRESSES.vrfRouter, vrfRouterAbi, wallet.provider);
         const cfg = await router.getVrfConfig();
         setVrfInfo({
-          coordinator: cfg[0],
           subscriptionId: cfg[1],
           keyHash: cfg[2],
+          callbackGasLimit: Number(cfg[4]),
         });
       } catch {
         setVrfInfo(null);
       }
     }
-    void loadVrfConfig();
-  }, [wallet.provider, wallet.isSepolia, routerReady]);
 
-  async function loadDrawById(drawId: bigint) {
-    if (!wallet.provider || !lotteryReady || drawId <= 0n) return;
+    void loadTokenMeta();
+    void loadOwnerAndVrf();
+  }, [wallet.provider, wallet.address, wallet.isSepolia, lotteryReady, tokenReady, routerReady]);
+
+  useEffect(() => {
+    async function bootstrapDraws() {
+      if (!wallet.provider || !wallet.isSepolia || !lotteryReady) return;
+      try {
+        const lottery = new Contract(ADDRESSES.lotteryGame, lotteryGameAbi, wallet.provider);
+        const latestDrawId = await lottery.nextDrawId();
+        if (latestDrawId === 0n) {
+          setStatusText("No draws created yet.");
+          return;
+        }
+        setDebugDrawIdInput(latestDrawId.toString());
+        await Promise.all([loadDrawById(latestDrawId), loadRecentDraws(latestDrawId)]);
+      } catch (err) {
+        setStatusText(`Failed to load draws: ${(err as Error).message}`);
+      }
+    }
+
+    void bootstrapDraws();
+  }, [wallet.provider, wallet.isSepolia, lotteryReady, loadDrawById, loadRecentDraws]);
+
+  async function runTx(action: "buy" | "start" | "finalize" | "timeout" | "refund", drawId: bigint) {
+    if (!canTransact || drawId <= 0n) return;
     try {
-      const lottery = new Contract(ADDRESSES.lotteryGame, lotteryGameAbi, wallet.provider);
-      const [info, prize, latestBlock] = await Promise.all([
-        lottery.draws(drawId),
-        lottery.getCurrentPrize(drawId),
-        wallet.provider.getBlockNumber(),
-      ]);
-      const fromBlock = Math.max(0, latestBlock - 200_000);
-      const fulfilledEvents = await lottery.queryFilter(
-        lottery.filters.LotteryRandomFulfilled(drawId),
-        fromBlock,
-        latestBlock,
-      );
-      const finalizedEvents = await lottery.queryFilter(lottery.filters.LotteryFinalized(drawId), fromBlock, latestBlock);
+      setBusyAction(action);
+      setErrorText("");
+      const lottery = new Contract(ADDRESSES.lotteryGame, lotteryGameAbi, wallet.signer);
 
-      setDraw({
-        drawId,
-        token: info.token,
-        ticketPrice: info.ticketPrice,
-        houseEdgeBps: Number(info.houseEdgeBps),
-        startTime: Number(info.startTime),
-        endTime: Number(info.endTime),
-        status: Number(info.status),
-        requestId: info.requestId,
-        randomWord: info.randomWord,
-        winner: info.winner,
-        totalTickets: info.totalTickets,
-        potAmount: info.potAmount,
-        grossPot: prize[0],
-        winnerPayout: prize[1],
-        houseTake: prize[2],
-        fulfillTxHash: fulfilledEvents.length ? fulfilledEvents[fulfilledEvents.length - 1].transactionHash : "",
-        finalizeTxHash: finalizedEvents.length ? finalizedEvents[finalizedEvents.length - 1].transactionHash : "",
-      });
-      setStatus(`Loaded draw #${drawId.toString()}.`);
-      setError("");
+      if (action === "buy") {
+        const info = await lottery.draws(drawId);
+        const totalCost = BigInt(info.ticketPrice) * BigInt(ticketCount);
+        const token = info.token as string;
+
+        if (!isEthToken(token) && wallet.address) {
+          const tokenContract = new Contract(token, erc20Abi, wallet.signer);
+          const allowance = await tokenContract.allowance(wallet.address, ADDRESSES.lotteryGame);
+          if (allowance < totalCost) {
+            const approveTx = await tokenContract.approve(ADDRESSES.lotteryGame, totalCost);
+            pushToast(`Tx sent: approve ${tokenSymbol}`, "sent");
+            await approveTx.wait();
+            pushToast("Approval confirmed.", "confirmed");
+          }
+        }
+
+        const tx = await lottery.buyTickets(drawId, ticketCount, { value: isEthToken(token) ? totalCost : 0n });
+        pushToast("Tx sent: Buy Tickets", "sent");
+        await tx.wait();
+        pushToast("Tickets purchased.", "confirmed");
+      }
+
+      if (action === "start") {
+        const tx = await lottery.startDraw(drawId);
+        pushToast("Tx sent: Start Draw", "sent");
+        await tx.wait();
+        pushToast("Draw started.", "confirmed");
+      }
+
+      if (action === "finalize") {
+        const tx = await lottery.finalizeDraw(drawId);
+        pushToast("Tx sent: Finalize", "sent");
+        await tx.wait();
+        pushToast("Draw finalized.", "confirmed");
+      }
+
+      if (action === "timeout") {
+        const tx = await lottery.timeoutDraw(drawId);
+        pushToast("Tx sent: Timeout Draw", "sent");
+        await tx.wait();
+        pushToast("Draw marked timed out.", "confirmed");
+      }
+
+      if (action === "refund") {
+        const tx = await lottery.claimTimedOutRefund(drawId);
+        pushToast("Tx sent: Claim Refund", "sent");
+        await tx.wait();
+        pushToast("Refund claimed.", "confirmed");
+      }
+
+      await Promise.all([loadDrawById(drawId), loadRecentDraws(drawId > 0n ? drawId : 1n)]);
     } catch (err) {
-      setError(`Load draw failed: ${(err as Error).message}`);
+      const msg = parseError(err);
+      setErrorText(msg);
+      pushToast(`Failed: ${msg}`, "failed");
+    } finally {
+      setBusyAction("none");
     }
   }
 
   async function createDraw() {
     if (!canTransact) return;
     if (createTokenChoice === "ERC20" && !tokenReady) {
-      setError("NEXT_PUBLIC_TEST_TOKEN is missing.");
+      setErrorText("SC7 token address is missing in environment config.");
       return;
     }
 
     try {
-      setError("");
+      setBusyAction("create");
+      setErrorText("");
+      const lottery = new Contract(ADDRESSES.lotteryGame, lotteryGameAbi, wallet.signer);
       const token = createTokenChoice === "ETH" ? ZeroAddress : ADDRESSES.testToken;
       const decimals = createTokenChoice === "ETH" ? 18 : tokenDecimals;
       const ticketPrice = parseUnits(createTicketPriceInput, decimals);
       const houseEdge = Number(createHouseEdgeInput);
       const endMinutes = Number(createEndMinutesInput);
       const nowTs = Math.floor(Date.now() / 1000);
-
-      if (ticketPrice <= 0n) throw new Error("Ticket price must be positive.");
-      if (!Number.isInteger(houseEdge) || houseEdge < 0 || houseEdge >= 10_000) {
-        throw new Error("houseEdgeBps must be 0..9999.");
-      }
-      if (!Number.isInteger(endMinutes) || endMinutes <= 0) {
-        throw new Error("End minutes must be positive.");
-      }
-
-      const startTime = nowTs;
       const endTime = nowTs + endMinutes * 60;
 
-      const lottery = new Contract(ADDRESSES.lotteryGame, lotteryGameAbi, wallet.signer);
-      setStatus("Creating draw...");
-      const tx = await lottery.createDraw(token, ticketPrice, startTime, endTime, houseEdge);
+      const tx = await lottery.createDraw(token, ticketPrice, nowTs, endTime, houseEdge);
+      pushToast("Tx sent: Create Draw", "sent");
       const receipt = await tx.wait();
+      pushToast("Draw created.", "confirmed");
 
       const iface = new Interface(lotteryGameAbi);
       let newDrawId = 0n;
@@ -212,126 +377,22 @@ export default function LotteryPage() {
       }
 
       if (newDrawId > 0n) {
-        setDrawIdInput(newDrawId.toString());
-        await loadDrawById(newDrawId);
+        setDebugDrawIdInput(newDrawId.toString());
+        await Promise.all([loadDrawById(newDrawId), loadRecentDraws(newDrawId)]);
       }
-
-      setStatus(`Draw created. Tx: ${tx.hash}`);
     } catch (err) {
-      setError((err as Error).message);
-    }
-  }
-
-  async function buyTickets() {
-    if (!canTransact || activeDrawId <= 0n || !wallet.address) return;
-    try {
-      setError("");
-      const lotteryRead = new Contract(ADDRESSES.lotteryGame, lotteryGameAbi, wallet.provider);
-      const info = await lotteryRead.draws(activeDrawId);
-      const count = Number(ticketCountInput);
-      if (!Number.isInteger(count) || count <= 0) throw new Error("Ticket count must be positive integer.");
-
-      const totalCost = BigInt(info.ticketPrice) * BigInt(count);
-      const token = info.token as string;
-
-      if (!isEthToken(token)) {
-        const tokenContract = new Contract(token, erc20Abi, wallet.signer);
-        const allowance = await tokenContract.allowance(wallet.address, ADDRESSES.lotteryGame);
-        if (allowance < totalCost) {
-          setStatus("Approving ERC20 allowance...");
-          const approveTx = await tokenContract.approve(ADDRESSES.lotteryGame, totalCost);
-          await approveTx.wait();
-        }
-      }
-
-      const lottery = new Contract(ADDRESSES.lotteryGame, lotteryGameAbi, wallet.signer);
-      setStatus("Buying tickets...");
-      const tx = await lottery.buyTickets(activeDrawId, count, { value: isEthToken(token) ? totalCost : 0n });
-      await tx.wait();
-      await loadDrawById(activeDrawId);
-      setStatus(`Tickets bought. Tx: ${tx.hash}`);
-    } catch (err) {
-      setError((err as Error).message);
-    }
-  }
-
-  async function startDraw() {
-    if (!canTransact || activeDrawId <= 0n) return;
-    try {
-      setError("");
-      const lottery = new Contract(ADDRESSES.lotteryGame, lotteryGameAbi, wallet.signer);
-      setStatus("Starting draw...");
-      const tx = await lottery.startDraw(activeDrawId);
-      await tx.wait();
-      await loadDrawById(activeDrawId);
-      setStatus(`Draw started. Tx: ${tx.hash}`);
-    } catch (err) {
-      setError((err as Error).message);
-    }
-  }
-
-  async function finalizeDraw() {
-    if (!canTransact || activeDrawId <= 0n) return;
-    try {
-      setError("");
-      const lottery = new Contract(ADDRESSES.lotteryGame, lotteryGameAbi, wallet.signer);
-      setStatus("Finalizing draw...");
-      const tx = await lottery.finalizeDraw(activeDrawId);
-      await tx.wait();
-      await loadDrawById(activeDrawId);
-      setStatus(`Draw finalized. Tx: ${tx.hash}`);
-    } catch (err) {
-      setError((err as Error).message);
-    }
-  }
-
-  async function timeoutDraw() {
-    if (!canTransact || activeDrawId <= 0n) return;
-    try {
-      setError("");
-      const lottery = new Contract(ADDRESSES.lotteryGame, lotteryGameAbi, wallet.signer);
-      setStatus("Timing out draw...");
-      const tx = await lottery.timeoutDraw(activeDrawId);
-      await tx.wait();
-      await loadDrawById(activeDrawId);
-      setStatus(`Draw timed out. Tx: ${tx.hash}`);
-    } catch (err) {
-      setError((err as Error).message);
-    }
-  }
-
-  async function claimTimedOutRefund() {
-    if (!canTransact || activeDrawId <= 0n) return;
-    try {
-      setError("");
-      const lottery = new Contract(ADDRESSES.lotteryGame, lotteryGameAbi, wallet.signer);
-      setStatus("Claiming timeout refund...");
-      const tx = await lottery.claimTimedOutRefund(activeDrawId);
-      await tx.wait();
-      await loadDrawById(activeDrawId);
-      setStatus(`Timeout refund claimed. Tx: ${tx.hash}`);
-    } catch (err) {
-      setError((err as Error).message);
-    }
-  }
-
-  async function claimFaucet() {
-    if (!canTransact || !tokenReady) return;
-    try {
-      setError("");
-      const token = new Contract(ADDRESSES.testToken, erc20Abi, wallet.signer);
-      setStatus("Claiming faucet token...");
-      const tx = await token.faucet();
-      await tx.wait();
-      setStatus(`Faucet received. Tx: ${tx.hash}`);
-    } catch (err) {
-      setError((err as Error).message);
+      const msg = parseError(err);
+      setErrorText(msg);
+      pushToast(`Failed: ${msg}`, "failed");
+    } finally {
+      setBusyAction("none");
     }
   }
 
   return (
-    <ClientOnly fallback={<main className="app-shell" />}>
-      <main className="app-shell">
+    <ClientOnly fallback={<main className="page-shell" />}>
+      <main className="page-shell">
+        <ToastStack items={toasts} />
         <AppHeader
           address={wallet.address}
           chainId={wallet.chainId}
@@ -340,11 +401,156 @@ export default function LotteryPage() {
           onConnect={wallet.connect}
         />
 
-        <section className="grid">
-          <article className="card span-6">
-            <h2>Create Draw</h2>
-            <p>Owner-only call. Draw supports ETH or test ERC20.</p>
-            <div className="form-grid">
+        <section className="card">
+          <h2>Current Draw</h2>
+          <div className="grid-2" style={{ marginTop: "12px" }}>
+            <div>
+              <small className="helper">Jackpot</small>
+              <div className="kpi">
+                {formatAmount(currentDraw.winnerPayout, selectedDrawTokenIsEth ? 18 : tokenDecimals, 4)} {activeTokenSymbol}
+              </div>
+              <small className="helper">
+                Ticket price: {formatAmount(currentDraw.ticketPrice, selectedDrawTokenIsEth ? 18 : tokenDecimals, 4)} {activeTokenSymbol}
+              </small>
+            </div>
+            <div>
+              <small className="helper">Ends in</small>
+              <div className="countdown">{countdownLabel}</div>
+              <small className="helper">Draw #{currentDraw.drawId.toString()} · {DRAW_STATUS[currentDraw.status] ?? "Unknown"}</small>
+            </div>
+          </div>
+
+          <div className="cta-row">
+            <div className="stepper">
+              <button type="button" onClick={() => setTicketCount((v) => Math.max(1, v - 1))}>
+                -
+              </button>
+              <input value={ticketCount} onChange={(e) => setTicketCount(Math.max(1, Number(e.target.value) || 1))} />
+              <button type="button" onClick={() => setTicketCount((v) => v + 1)}>
+                +
+              </button>
+            </div>
+
+            {canBuy && (
+              <button className="btn" type="button" disabled={!canTransact || busyAction !== "none"} onClick={() => void runTx("buy", currentDraw.drawId)}>
+                {busyAction === "buy" ? "Waiting..." : "Buy Tickets"}
+              </button>
+            )}
+
+            {canStart && (
+              <button className="btn" type="button" disabled={!canTransact || busyAction !== "none"} onClick={() => void runTx("start", currentDraw.drawId)}>
+                {busyAction === "start" ? "Waiting..." : "Start Draw"}
+              </button>
+            )}
+
+            {canFinalize && (
+              <button className="btn" type="button" disabled={!canTransact || busyAction !== "none"} onClick={() => void runTx("finalize", currentDraw.drawId)}>
+                {busyAction === "finalize" ? "Waiting..." : "Finalize"}
+              </button>
+            )}
+
+            {isTimedOut && (
+              <button className="btn secondary" type="button" disabled={!canTransact || busyAction !== "none"} onClick={() => void runTx("refund", currentDraw.drawId)}>
+                {busyAction === "refund" ? "Waiting..." : "Claim Refund"}
+              </button>
+            )}
+          </div>
+
+          {isWaitingRandomness && (
+            <div className="inline" style={{ marginTop: "10px" }}>
+              <span className="spinner" />
+              <span className="helper">Waiting for randomness...</span>
+            </div>
+          )}
+
+          {isFinalized && (
+            <div className="number-grid" style={{ marginTop: "12px" }}>
+              <div className="number-row">
+                <small>Winner</small>
+                <strong>{shortAddress(currentDraw.winner)}</strong>
+              </div>
+              <div className="number-row">
+                <small>Prize</small>
+                <strong>
+                  {formatAmount(currentDraw.winnerPayout, selectedDrawTokenIsEth ? 18 : tokenDecimals, 4)} {activeTokenSymbol}
+                </strong>
+              </div>
+            </div>
+          )}
+
+          <details className="verify">
+            <summary>Verify fairness</summary>
+            <div className="verify-body">
+              {currentDraw.fulfillTxHash ? (
+                <a href={explorerTx(currentDraw.fulfillTxHash)} target="_blank" rel="noreferrer">
+                  Fulfill Tx (Etherscan)
+                </a>
+              ) : (
+                <span className="helper">Fulfill tx not available yet.</span>
+              )}
+            </div>
+          </details>
+        </section>
+
+        <section className="card">
+          <h3>Recent Draws</h3>
+          <div className="list" style={{ marginTop: "12px" }}>
+            {recentDraws.length === 0 && <p className="helper">No recent draws yet.</p>}
+            {recentDraws.map((row) => (
+              <article key={row.drawId.toString()} className="list-row">
+                <div>
+                  <strong>Draw #{row.drawId.toString()}</strong>
+                  <div className="list-meta">
+                    {row.status === 4
+                      ? `Winner ${shortAddress(row.winner)} · Prize ${formatAmount(row.prize, selectedDrawTokenIsEth ? 18 : tokenDecimals, 4)} ${activeTokenSymbol}`
+                      : DRAW_STATUS[row.status] ?? "Unknown"}
+                  </div>
+                </div>
+                {row.verifyTxHash ? (
+                  <a className="btn ghost" href={explorerTx(row.verifyTxHash)} target="_blank" rel="noreferrer">
+                    Verify
+                  </a>
+                ) : (
+                  <span className="helper">-</span>
+                )}
+              </article>
+            ))}
+          </div>
+        </section>
+
+        {showDebug && (
+          <section className="card debug">
+            <h3>Debug / Admin</h3>
+            <p className="helper">Visible because `?debug=1` is set or wallet is contract owner.</p>
+
+            <div className="field-grid">
+              <div className="field">
+                <label>Draw ID</label>
+                <input value={debugDrawIdInput} onChange={(e) => setDebugDrawIdInput(e.target.value)} />
+              </div>
+              <div className="field">
+                <label>Load / Operate</label>
+                <div className="cta-row" style={{ marginTop: "0" }}>
+                  <button
+                    className="btn secondary"
+                    type="button"
+                    disabled={busyAction !== "none"}
+                    onClick={() => {
+                      const drawId = BigInt(debugDrawIdInput || "0");
+                      if (drawId > 0n) void loadDrawById(drawId);
+                    }}
+                  >
+                    Refresh
+                  </button>
+                  <button className="btn danger" type="button" disabled={!canTransact || busyAction !== "none"} onClick={() => void runTx("timeout", BigInt(debugDrawIdInput || "0"))}>
+                    Timeout Draw
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <h4 style={{ marginTop: "8px" }}>Create Draw</h4>
+            <div className="field-grid">
               <div className="field">
                 <label>Token</label>
                 <select value={createTokenChoice} onChange={(e) => setCreateTokenChoice(e.target.value as "ETH" | "ERC20")}>
@@ -356,11 +562,7 @@ export default function LotteryPage() {
               </div>
               <div className="field">
                 <label>Ticket price</label>
-                <input
-                  value={createTicketPriceInput}
-                  onChange={(e) => setCreateTicketPriceInput(e.target.value)}
-                  placeholder="0.005"
-                />
+                <input value={createTicketPriceInput} onChange={(e) => setCreateTicketPriceInput(e.target.value)} />
               </div>
               <div className="field">
                 <label>End after (minutes)</label>
@@ -371,136 +573,31 @@ export default function LotteryPage() {
                 <input value={createHouseEdgeInput} onChange={(e) => setCreateHouseEdgeInput(e.target.value)} />
               </div>
             </div>
-            <div className="actions">
-              <button type="button" disabled={!canTransact} onClick={() => void createDraw()}>
-                Create Draw
-              </button>
-              <button
-                className="secondary"
-                type="button"
-                disabled={!canTransact || !tokenReady}
-                onClick={() => void claimFaucet()}
-              >
-                Claim {tokenSymbol} Faucet
+            <div className="cta-row">
+              <button className="btn" type="button" disabled={!canTransact || busyAction !== "none"} onClick={() => void createDraw()}>
+                {busyAction === "create" ? "Waiting..." : "Create Draw"}
               </button>
             </div>
-          </article>
 
-          <article className="card span-6">
-            <h2>Operate Draw</h2>
-            <p>Buy tickets and trigger start/finalize after end time.</p>
-            <div className="form-grid">
+            <div className="field-grid">
               <div className="field">
-                <label>Draw ID</label>
-                <input value={drawIdInput} onChange={(e) => setDrawIdInput(e.target.value)} placeholder="e.g. 1" />
+                <label>VRF subscription</label>
+                <input readOnly value={vrfInfo?.subscriptionId?.toString() ?? "-"} className="mono" />
               </div>
               <div className="field">
-                <label>Ticket count</label>
-                <input value={ticketCountInput} onChange={(e) => setTicketCountInput(e.target.value)} />
+                <label>Key hash</label>
+                <input readOnly value={vrfInfo?.keyHash ?? "-"} className="mono" />
+              </div>
+              <div className="field">
+                <label>Callback gas</label>
+                <input readOnly value={vrfInfo?.callbackGasLimit?.toString() ?? "-"} className="mono" />
               </div>
             </div>
-            <div className="actions">
-              <button className="secondary" type="button" onClick={() => void loadDrawById(activeDrawId)}>
-                Refresh Draw
-              </button>
-              <button type="button" disabled={!canTransact} onClick={() => void buyTickets()}>
-                Buy Tickets
-              </button>
-              <button type="button" disabled={!canTransact} onClick={() => void startDraw()}>
-                Start Draw
-              </button>
-              <button type="button" disabled={!canTransact} onClick={() => void finalizeDraw()}>
-                Finalize Draw
-              </button>
-              <button className="warn" type="button" disabled={!canTransact} onClick={() => void timeoutDraw()}>
-                Timeout Draw
-              </button>
-              <button className="secondary" type="button" disabled={!canTransact} onClick={() => void claimTimedOutRefund()}>
-                Claim Timeout Refund
-              </button>
-            </div>
-          </article>
+          </section>
+        )}
 
-          <article className="card span-12">
-            <div className="title-row">
-              <h3>Draw Detail</h3>
-              <span className="tag">{DRAW_STATUS[draw.status] ?? "Unknown"}</span>
-            </div>
-            <div className="kv">
-              <span>Draw ID</span>
-              <span>{draw.drawId.toString()}</span>
-              <span>Token</span>
-              <code>{draw.token}</code>
-              <span>Ticket price</span>
-              <span>
-                {formatAmount(draw.ticketPrice, draw.token.toLowerCase() === ZeroAddress.toLowerCase() ? 18 : tokenDecimals)}{" "}
-                {draw.token.toLowerCase() === ZeroAddress.toLowerCase() ? "ETH" : tokenSymbol}
-              </span>
-              <span>Total tickets</span>
-              <span>{draw.totalTickets.toString()}</span>
-              <span>Pot amount</span>
-              <span>
-                {formatAmount(draw.potAmount, draw.token.toLowerCase() === ZeroAddress.toLowerCase() ? 18 : tokenDecimals)}{" "}
-                {draw.token.toLowerCase() === ZeroAddress.toLowerCase() ? "ETH" : tokenSymbol}
-              </span>
-              <span>Winner payout</span>
-              <span>
-                {formatAmount(draw.winnerPayout, draw.token.toLowerCase() === ZeroAddress.toLowerCase() ? 18 : tokenDecimals)}
-              </span>
-              <span>House take</span>
-              <span>{formatAmount(draw.houseTake, draw.token.toLowerCase() === ZeroAddress.toLowerCase() ? 18 : tokenDecimals)}</span>
-              <span>Start time</span>
-              <span>{toDateTime(draw.startTime)}</span>
-              <span>End time</span>
-              <span>{toDateTime(draw.endTime)}</span>
-              <span>Request ID</span>
-              <code>{draw.requestId.toString()}</code>
-              <span>Random word</span>
-              <code>{draw.randomWord.toString()}</code>
-              <span>Winner</span>
-              <code>{draw.winner || "-"}</code>
-              <span>Fulfill Tx</span>
-              <span>
-                {draw.fulfillTxHash ? (
-                  <a href={explorerTx(draw.fulfillTxHash)} target="_blank" rel="noreferrer">
-                    {draw.fulfillTxHash}
-                  </a>
-                ) : (
-                  "-"
-                )}
-              </span>
-              <span>Finalize Tx</span>
-              <span>
-                {draw.finalizeTxHash ? (
-                  <a href={explorerTx(draw.finalizeTxHash)} target="_blank" rel="noreferrer">
-                    {draw.finalizeTxHash}
-                  </a>
-                ) : (
-                  "-"
-                )}
-              </span>
-            </div>
-          </article>
-
-          <article className="card span-12">
-            <h3>Verifiable Randomness Data</h3>
-            <div className="kv">
-              <span>Coordinator</span>
-              <code>{vrfInfo?.coordinator ?? "-"}</code>
-              <span>Subscription ID</span>
-              <code>{vrfInfo?.subscriptionId.toString() ?? "-"}</code>
-              <span>Key Hash</span>
-              <code>{vrfInfo?.keyHash ?? "-"}</code>
-              <span>Lottery address</span>
-              <a href={`${SEPOLIA_EXPLORER}/address/${ADDRESSES.lotteryGame}`} target="_blank" rel="noreferrer">
-                {ADDRESSES.lotteryGame || "-"}
-              </a>
-            </div>
-          </article>
-        </section>
-
-        {error && <p className="status error">{error}</p>}
-        {!error && <p className="status success">{status}</p>}
+        {errorText && <p className="helper" style={{ color: "#ff9aa8" }}>{errorText}</p>}
+        {!errorText && <p className="helper">{statusText}</p>}
       </main>
     </ClientOnly>
   );
