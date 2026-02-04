@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Contract, Interface, ZeroAddress, isAddress, parseUnits } from "ethers";
 import { AppHeader } from "@/components/AppHeader";
+import { ClientOnly } from "@/components/ClientOnly";
 import { useWallet } from "@/hooks/useWallet";
 import { ADDRESSES, SEPOLIA_EXPLORER } from "@/lib/config";
 import { erc20Abi, lotteryGameAbi, vrfRouterAbi } from "@/lib/abis";
@@ -299,164 +300,172 @@ export default function LotteryPage() {
   }
 
   return (
-    <main className="app-shell">
-      <AppHeader
-        address={wallet.address}
-        chainId={wallet.chainId}
-        hasProvider={wallet.hasProvider}
-        isSepolia={wallet.isSepolia}
-        onConnect={wallet.connect}
-      />
+    <ClientOnly fallback={<main className="app-shell" />}>
+      <main className="app-shell">
+        <AppHeader
+          address={wallet.address}
+          chainId={wallet.chainId}
+          hasProvider={wallet.hasProvider}
+          isSepolia={wallet.isSepolia}
+          onConnect={wallet.connect}
+        />
 
-      <section className="grid">
-        <article className="card span-6">
-          <h2>Create Draw</h2>
-          <p>Owner-only call. Draw supports ETH or test ERC20.</p>
-          <div className="form-grid">
-            <div className="field">
-              <label>Token</label>
-              <select value={createTokenChoice} onChange={(e) => setCreateTokenChoice(e.target.value as "ETH" | "ERC20")}>
-                <option value="ETH">ETH</option>
-                <option value="ERC20" disabled={!tokenReady}>
-                  {tokenSymbol}
-                </option>
-              </select>
+        <section className="grid">
+          <article className="card span-6">
+            <h2>Create Draw</h2>
+            <p>Owner-only call. Draw supports ETH or test ERC20.</p>
+            <div className="form-grid">
+              <div className="field">
+                <label>Token</label>
+                <select value={createTokenChoice} onChange={(e) => setCreateTokenChoice(e.target.value as "ETH" | "ERC20")}>
+                  <option value="ETH">ETH</option>
+                  <option value="ERC20" disabled={!tokenReady}>
+                    {tokenSymbol}
+                  </option>
+                </select>
+              </div>
+              <div className="field">
+                <label>Ticket price</label>
+                <input
+                  value={createTicketPriceInput}
+                  onChange={(e) => setCreateTicketPriceInput(e.target.value)}
+                  placeholder="0.005"
+                />
+              </div>
+              <div className="field">
+                <label>End after (minutes)</label>
+                <input value={createEndMinutesInput} onChange={(e) => setCreateEndMinutesInput(e.target.value)} />
+              </div>
+              <div className="field">
+                <label>House edge (bps)</label>
+                <input value={createHouseEdgeInput} onChange={(e) => setCreateHouseEdgeInput(e.target.value)} />
+              </div>
             </div>
-            <div className="field">
-              <label>Ticket price</label>
-              <input
-                value={createTicketPriceInput}
-                onChange={(e) => setCreateTicketPriceInput(e.target.value)}
-                placeholder="0.005"
-              />
+            <div className="actions">
+              <button type="button" disabled={!canTransact} onClick={() => void createDraw()}>
+                Create Draw
+              </button>
+              <button
+                className="secondary"
+                type="button"
+                disabled={!canTransact || !tokenReady}
+                onClick={() => void claimFaucet()}
+              >
+                Claim {tokenSymbol} Faucet
+              </button>
             </div>
-            <div className="field">
-              <label>End after (minutes)</label>
-              <input value={createEndMinutesInput} onChange={(e) => setCreateEndMinutesInput(e.target.value)} />
-            </div>
-            <div className="field">
-              <label>House edge (bps)</label>
-              <input value={createHouseEdgeInput} onChange={(e) => setCreateHouseEdgeInput(e.target.value)} />
-            </div>
-          </div>
-          <div className="actions">
-            <button type="button" disabled={!canTransact} onClick={() => void createDraw()}>
-              Create Draw
-            </button>
-            <button className="secondary" type="button" disabled={!canTransact || !tokenReady} onClick={() => void claimFaucet()}>
-              Claim {tokenSymbol} Faucet
-            </button>
-          </div>
-        </article>
+          </article>
 
-        <article className="card span-6">
-          <h2>Operate Draw</h2>
-          <p>Buy tickets and trigger start/finalize after end time.</p>
-          <div className="form-grid">
-            <div className="field">
-              <label>Draw ID</label>
-              <input value={drawIdInput} onChange={(e) => setDrawIdInput(e.target.value)} placeholder="e.g. 1" />
+          <article className="card span-6">
+            <h2>Operate Draw</h2>
+            <p>Buy tickets and trigger start/finalize after end time.</p>
+            <div className="form-grid">
+              <div className="field">
+                <label>Draw ID</label>
+                <input value={drawIdInput} onChange={(e) => setDrawIdInput(e.target.value)} placeholder="e.g. 1" />
+              </div>
+              <div className="field">
+                <label>Ticket count</label>
+                <input value={ticketCountInput} onChange={(e) => setTicketCountInput(e.target.value)} />
+              </div>
             </div>
-            <div className="field">
-              <label>Ticket count</label>
-              <input value={ticketCountInput} onChange={(e) => setTicketCountInput(e.target.value)} />
+            <div className="actions">
+              <button className="secondary" type="button" onClick={() => void loadDrawById(activeDrawId)}>
+                Refresh Draw
+              </button>
+              <button type="button" disabled={!canTransact} onClick={() => void buyTickets()}>
+                Buy Tickets
+              </button>
+              <button type="button" disabled={!canTransact} onClick={() => void startDraw()}>
+                Start Draw
+              </button>
+              <button type="button" disabled={!canTransact} onClick={() => void finalizeDraw()}>
+                Finalize Draw
+              </button>
             </div>
-          </div>
-          <div className="actions">
-            <button className="secondary" type="button" onClick={() => void loadDrawById(activeDrawId)}>
-              Refresh Draw
-            </button>
-            <button type="button" disabled={!canTransact} onClick={() => void buyTickets()}>
-              Buy Tickets
-            </button>
-            <button type="button" disabled={!canTransact} onClick={() => void startDraw()}>
-              Start Draw
-            </button>
-            <button type="button" disabled={!canTransact} onClick={() => void finalizeDraw()}>
-              Finalize Draw
-            </button>
-          </div>
-        </article>
+          </article>
 
-        <article className="card span-12">
-          <div className="title-row">
-            <h3>Draw Detail</h3>
-            <span className="tag">{DRAW_STATUS[draw.status] ?? "Unknown"}</span>
-          </div>
-          <div className="kv">
-            <span>Draw ID</span>
-            <span>{draw.drawId.toString()}</span>
-            <span>Token</span>
-            <code>{draw.token}</code>
-            <span>Ticket price</span>
-            <span>
-              {formatAmount(draw.ticketPrice, draw.token.toLowerCase() === ZeroAddress.toLowerCase() ? 18 : tokenDecimals)}{" "}
-              {draw.token.toLowerCase() === ZeroAddress.toLowerCase() ? "ETH" : tokenSymbol}
-            </span>
-            <span>Total tickets</span>
-            <span>{draw.totalTickets.toString()}</span>
-            <span>Pot amount</span>
-            <span>
-              {formatAmount(draw.potAmount, draw.token.toLowerCase() === ZeroAddress.toLowerCase() ? 18 : tokenDecimals)}{" "}
-              {draw.token.toLowerCase() === ZeroAddress.toLowerCase() ? "ETH" : tokenSymbol}
-            </span>
-            <span>Winner payout</span>
-            <span>{formatAmount(draw.winnerPayout, draw.token.toLowerCase() === ZeroAddress.toLowerCase() ? 18 : tokenDecimals)}</span>
-            <span>House take</span>
-            <span>{formatAmount(draw.houseTake, draw.token.toLowerCase() === ZeroAddress.toLowerCase() ? 18 : tokenDecimals)}</span>
-            <span>Start time</span>
-            <span>{toDateTime(draw.startTime)}</span>
-            <span>End time</span>
-            <span>{toDateTime(draw.endTime)}</span>
-            <span>Request ID</span>
-            <code>{draw.requestId.toString()}</code>
-            <span>Random word</span>
-            <code>{draw.randomWord.toString()}</code>
-            <span>Winner</span>
-            <code>{draw.winner || "-"}</code>
-            <span>Fulfill Tx</span>
-            <span>
-              {draw.fulfillTxHash ? (
-                <a href={explorerTx(draw.fulfillTxHash)} target="_blank" rel="noreferrer">
-                  {draw.fulfillTxHash}
-                </a>
-              ) : (
-                "-"
-              )}
-            </span>
-            <span>Finalize Tx</span>
-            <span>
-              {draw.finalizeTxHash ? (
-                <a href={explorerTx(draw.finalizeTxHash)} target="_blank" rel="noreferrer">
-                  {draw.finalizeTxHash}
-                </a>
-              ) : (
-                "-"
-              )}
-            </span>
-          </div>
-        </article>
+          <article className="card span-12">
+            <div className="title-row">
+              <h3>Draw Detail</h3>
+              <span className="tag">{DRAW_STATUS[draw.status] ?? "Unknown"}</span>
+            </div>
+            <div className="kv">
+              <span>Draw ID</span>
+              <span>{draw.drawId.toString()}</span>
+              <span>Token</span>
+              <code>{draw.token}</code>
+              <span>Ticket price</span>
+              <span>
+                {formatAmount(draw.ticketPrice, draw.token.toLowerCase() === ZeroAddress.toLowerCase() ? 18 : tokenDecimals)}{" "}
+                {draw.token.toLowerCase() === ZeroAddress.toLowerCase() ? "ETH" : tokenSymbol}
+              </span>
+              <span>Total tickets</span>
+              <span>{draw.totalTickets.toString()}</span>
+              <span>Pot amount</span>
+              <span>
+                {formatAmount(draw.potAmount, draw.token.toLowerCase() === ZeroAddress.toLowerCase() ? 18 : tokenDecimals)}{" "}
+                {draw.token.toLowerCase() === ZeroAddress.toLowerCase() ? "ETH" : tokenSymbol}
+              </span>
+              <span>Winner payout</span>
+              <span>
+                {formatAmount(draw.winnerPayout, draw.token.toLowerCase() === ZeroAddress.toLowerCase() ? 18 : tokenDecimals)}
+              </span>
+              <span>House take</span>
+              <span>{formatAmount(draw.houseTake, draw.token.toLowerCase() === ZeroAddress.toLowerCase() ? 18 : tokenDecimals)}</span>
+              <span>Start time</span>
+              <span>{toDateTime(draw.startTime)}</span>
+              <span>End time</span>
+              <span>{toDateTime(draw.endTime)}</span>
+              <span>Request ID</span>
+              <code>{draw.requestId.toString()}</code>
+              <span>Random word</span>
+              <code>{draw.randomWord.toString()}</code>
+              <span>Winner</span>
+              <code>{draw.winner || "-"}</code>
+              <span>Fulfill Tx</span>
+              <span>
+                {draw.fulfillTxHash ? (
+                  <a href={explorerTx(draw.fulfillTxHash)} target="_blank" rel="noreferrer">
+                    {draw.fulfillTxHash}
+                  </a>
+                ) : (
+                  "-"
+                )}
+              </span>
+              <span>Finalize Tx</span>
+              <span>
+                {draw.finalizeTxHash ? (
+                  <a href={explorerTx(draw.finalizeTxHash)} target="_blank" rel="noreferrer">
+                    {draw.finalizeTxHash}
+                  </a>
+                ) : (
+                  "-"
+                )}
+              </span>
+            </div>
+          </article>
 
-        <article className="card span-12">
-          <h3>Verifiable Randomness Data</h3>
-          <div className="kv">
-            <span>Coordinator</span>
-            <code>{vrfInfo?.coordinator ?? "-"}</code>
-            <span>Subscription ID</span>
-            <code>{vrfInfo?.subscriptionId.toString() ?? "-"}</code>
-            <span>Key Hash</span>
-            <code>{vrfInfo?.keyHash ?? "-"}</code>
-            <span>Lottery address</span>
-            <a href={`${SEPOLIA_EXPLORER}/address/${ADDRESSES.lotteryGame}`} target="_blank" rel="noreferrer">
-              {ADDRESSES.lotteryGame || "-"}
-            </a>
-          </div>
-        </article>
-      </section>
+          <article className="card span-12">
+            <h3>Verifiable Randomness Data</h3>
+            <div className="kv">
+              <span>Coordinator</span>
+              <code>{vrfInfo?.coordinator ?? "-"}</code>
+              <span>Subscription ID</span>
+              <code>{vrfInfo?.subscriptionId.toString() ?? "-"}</code>
+              <span>Key Hash</span>
+              <code>{vrfInfo?.keyHash ?? "-"}</code>
+              <span>Lottery address</span>
+              <a href={`${SEPOLIA_EXPLORER}/address/${ADDRESSES.lotteryGame}`} target="_blank" rel="noreferrer">
+                {ADDRESSES.lotteryGame || "-"}
+              </a>
+            </div>
+          </article>
+        </section>
 
-      {error && <p className="status error">{error}</p>}
-      {!error && <p className="status success">{status}</p>}
-    </main>
+        {error && <p className="status error">{error}</p>}
+        {!error && <p className="status success">{status}</p>}
+      </main>
+    </ClientOnly>
   );
 }
-

@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Contract, isAddress } from "ethers";
 import { AppHeader } from "@/components/AppHeader";
+import { ClientOnly } from "@/components/ClientOnly";
 import { useWallet } from "@/hooks/useWallet";
 import { ADDRESSES, LINK_TOKEN_SEPOLIA, SEPOLIA_EXPLORER } from "@/lib/config";
 import { treasuryVaultAbi, vrfRouterAbi, erc20Abi } from "@/lib/abis";
@@ -119,98 +120,104 @@ export default function HomePage() {
   }, [wallet.provider, wallet.isSepolia, envReady]);
 
   return (
-    <main className="app-shell">
-      <AppHeader
-        address={wallet.address}
-        chainId={wallet.chainId}
-        hasProvider={wallet.hasProvider}
-        isSepolia={wallet.isSepolia}
-        onConnect={wallet.connect}
-      />
+    <ClientOnly fallback={<main className="app-shell" />}>
+      <main className="app-shell">
+        <AppHeader
+          address={wallet.address}
+          chainId={wallet.chainId}
+          hasProvider={wallet.hasProvider}
+          isSepolia={wallet.isSepolia}
+          onConnect={wallet.connect}
+        />
 
-      <section className="grid">
-        <article className="card span-12">
-          <div className="title-row">
-            <h2>Protocol Overview</h2>
-            <span className="tag">MetaMask only</span>
-          </div>
-          <div className="kv">
-            <span>Status</span>
-            <span>{status}</span>
-            <span>TreasuryVault</span>
-            <code>{ADDRESSES.treasuryVault || "Missing NEXT_PUBLIC_TREASURY_VAULT"}</code>
-            <span>VRFRouter</span>
-            <code>{ADDRESSES.vrfRouter || "Missing NEXT_PUBLIC_VRF_ROUTER"}</code>
-            <span>DiceGame</span>
-            <code>{ADDRESSES.diceGame || "Missing NEXT_PUBLIC_DICE_GAME"}</code>
-            <span>LotteryGame</span>
-            <code>{ADDRESSES.lotteryGame || "Missing NEXT_PUBLIC_LOTTERY_GAME"}</code>
-            <span>Test ERC20</span>
-            <code>{ADDRESSES.testToken || "Optional: NEXT_PUBLIC_TEST_TOKEN"}</code>
-            <span>Chainlink LINK (Sepolia)</span>
-            <code>{LINK_TOKEN_SEPOLIA}</code>
-          </div>
-          {!envReady && <p className="status error">Please set contract addresses in `frontend/.env.local` first.</p>}
-        </article>
+        <section className="grid">
+          <article className="card span-12">
+            <div className="title-row">
+              <h2>Protocol Overview</h2>
+              <span className="tag">MetaMask only</span>
+            </div>
+            <div className="kv">
+              <span>Status</span>
+              <span>{status}</span>
+              <span>TreasuryVault</span>
+              <code>{ADDRESSES.treasuryVault || "Missing NEXT_PUBLIC_TREASURY_VAULT"}</code>
+              <span>VRFRouter</span>
+              <code>{ADDRESSES.vrfRouter || "Missing NEXT_PUBLIC_VRF_ROUTER"}</code>
+              <span>DiceGame</span>
+              <code>{ADDRESSES.diceGame || "Missing NEXT_PUBLIC_DICE_GAME"}</code>
+              <span>LotteryGame</span>
+              <code>{ADDRESSES.lotteryGame || "Missing NEXT_PUBLIC_LOTTERY_GAME"}</code>
+              <span>Test ERC20</span>
+              <code>{ADDRESSES.testToken || "Optional: NEXT_PUBLIC_TEST_TOKEN"}</code>
+              <span>Chainlink LINK (Sepolia)</span>
+              <code>{LINK_TOKEN_SEPOLIA}</code>
+            </div>
+            {!envReady && <p className="status error">Please set contract addresses in `frontend/.env.local` first.</p>}
+          </article>
 
-        <article className="card span-6">
-          <h3>Vault Balances</h3>
-          <div className="kv">
-            <span>ETH total</span>
-            <span>{formatAmount(vaultData.ethTotal)} ETH</span>
-            <span>ETH reserved</span>
-            <span>{formatAmount(vaultData.ethReserved)} ETH</span>
-            <span>ETH free</span>
-            <span>{formatAmount(vaultData.ethFree)} ETH</span>
-            <span>{vaultData.tokenSymbol} total</span>
-            <span>{formatAmount(vaultData.tokenTotal)}</span>
-            <span>{vaultData.tokenSymbol} reserved</span>
-            <span>{formatAmount(vaultData.tokenReserved)}</span>
-            <span>{vaultData.tokenSymbol} free</span>
-            <span>{formatAmount(vaultData.tokenFree)}</span>
-          </div>
-        </article>
+          <article className="card span-6">
+            <h3>Vault Balances</h3>
+            <div className="kv">
+              <span>ETH total</span>
+              <span>{formatAmount(vaultData.ethTotal)} ETH</span>
+              <span>ETH reserved</span>
+              <span>{formatAmount(vaultData.ethReserved)} ETH</span>
+              <span>ETH free</span>
+              <span>{formatAmount(vaultData.ethFree)} ETH</span>
+              <span>{vaultData.tokenSymbol} total</span>
+              <span>{formatAmount(vaultData.tokenTotal)}</span>
+              <span>{vaultData.tokenSymbol} reserved</span>
+              <span>{formatAmount(vaultData.tokenReserved)}</span>
+              <span>{vaultData.tokenSymbol} free</span>
+              <span>{formatAmount(vaultData.tokenFree)}</span>
+            </div>
+          </article>
 
-        <article className="card span-6">
-          <h3>Global Bet Limits</h3>
-          <div className="kv">
-            <span>ETH min</span>
-            <span>{formatAmount(vaultData.minEthBet)} ETH</span>
-            <span>ETH max</span>
-            <span>{formatAmount(vaultData.maxEthBet)} ETH</span>
-            <span>{vaultData.tokenSymbol} min</span>
-            <span>{formatAmount(vaultData.minTokenBet)}</span>
-            <span>{vaultData.tokenSymbol} max</span>
-            <span>{formatAmount(vaultData.maxTokenBet)}</span>
-          </div>
-        </article>
+          <article className="card span-6">
+            <h3>Global Bet Limits</h3>
+            <div className="kv">
+              <span>ETH min</span>
+              <span>{formatAmount(vaultData.minEthBet)} ETH</span>
+              <span>ETH max</span>
+              <span>{formatAmount(vaultData.maxEthBet)} ETH</span>
+              <span>{vaultData.tokenSymbol} min</span>
+              <span>{formatAmount(vaultData.minTokenBet)}</span>
+              <span>{vaultData.tokenSymbol} max</span>
+              <span>{formatAmount(vaultData.maxTokenBet)}</span>
+            </div>
+          </article>
 
-        <article className="card span-12">
-          <div className="title-row">
-            <h3>Verifiable Randomness Panel</h3>
-            {vrfData?.coordinator && (
-              <a className="tag" href={`${SEPOLIA_EXPLORER}/address/${vrfData.coordinator}`} target="_blank" rel="noreferrer">
-                {shortAddress(vrfData.coordinator)}
-              </a>
-            )}
-          </div>
-          <div className="kv">
-            <span>Coordinator</span>
-            <code>{vrfData?.coordinator ?? "-"}</code>
-            <span>Subscription ID</span>
-            <code>{vrfData?.subscriptionId.toString() ?? "-"}</code>
-            <span>Key Hash</span>
-            <code>{vrfData?.keyHash ?? "-"}</code>
-            <span>Request confirmations</span>
-            <span>{vrfData?.requestConfirmations ?? "-"}</span>
-            <span>Callback gas limit</span>
-            <span>{vrfData?.callbackGasLimit ?? "-"}</span>
-            <span>Native payment</span>
-            <span>{vrfData ? (vrfData.nativePayment ? "true" : "false") : "-"}</span>
-          </div>
-        </article>
-      </section>
-    </main>
+          <article className="card span-12">
+            <div className="title-row">
+              <h3>Verifiable Randomness Panel</h3>
+              {vrfData?.coordinator && (
+                <a
+                  className="tag"
+                  href={`${SEPOLIA_EXPLORER}/address/${vrfData.coordinator}`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {shortAddress(vrfData.coordinator)}
+                </a>
+              )}
+            </div>
+            <div className="kv">
+              <span>Coordinator</span>
+              <code>{vrfData?.coordinator ?? "-"}</code>
+              <span>Subscription ID</span>
+              <code>{vrfData?.subscriptionId.toString() ?? "-"}</code>
+              <span>Key Hash</span>
+              <code>{vrfData?.keyHash ?? "-"}</code>
+              <span>Request confirmations</span>
+              <span>{vrfData?.requestConfirmations ?? "-"}</span>
+              <span>Callback gas limit</span>
+              <span>{vrfData?.callbackGasLimit ?? "-"}</span>
+              <span>Native payment</span>
+              <span>{vrfData ? (vrfData.nativePayment ? "true" : "false") : "-"}</span>
+            </div>
+          </article>
+        </section>
+      </main>
+    </ClientOnly>
   );
 }
-

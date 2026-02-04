@@ -13,6 +13,7 @@ import {
   randomBytes,
 } from "ethers";
 import { AppHeader } from "@/components/AppHeader";
+import { ClientOnly } from "@/components/ClientOnly";
 import { useWallet } from "@/hooks/useWallet";
 import { ADDRESSES, SEPOLIA_EXPLORER } from "@/lib/config";
 import { diceGameAbi, erc20Abi, vrfRouterAbi } from "@/lib/abis";
@@ -295,157 +296,166 @@ export default function DicePage() {
   }
 
   return (
-    <main className="app-shell">
-      <AppHeader
-        address={wallet.address}
-        chainId={wallet.chainId}
-        hasProvider={wallet.hasProvider}
-        isSepolia={wallet.isSepolia}
-        onConnect={wallet.connect}
-      />
+    <ClientOnly fallback={<main className="app-shell" />}>
+      <main className="app-shell">
+        <AppHeader
+          address={wallet.address}
+          chainId={wallet.chainId}
+          hasProvider={wallet.hasProvider}
+          isSepolia={wallet.isSepolia}
+          onConnect={wallet.connect}
+        />
 
-      <section className="grid">
-        <article className="card span-6">
-          <h2>Place Dice Bet</h2>
-          <p>One-click flow: commit + request randomness.</p>
+        <section className="grid">
+          <article className="card span-6">
+            <h2>Place Dice Bet</h2>
+            <p>One-click flow: commit + request randomness.</p>
 
-          <div className="form-grid">
-            <div className="field">
-              <label>Token</label>
-              <select value={tokenChoice} onChange={(e) => setTokenChoice(e.target.value as "ETH" | "ERC20")}>
-                <option value="ETH">ETH</option>
-                <option value="ERC20" disabled={!tokenReady}>
-                  {tokenSymbol}
-                </option>
-              </select>
+            <div className="form-grid">
+              <div className="field">
+                <label>Token</label>
+                <select value={tokenChoice} onChange={(e) => setTokenChoice(e.target.value as "ETH" | "ERC20")}>
+                  <option value="ETH">ETH</option>
+                  <option value="ERC20" disabled={!tokenReady}>
+                    {tokenSymbol}
+                  </option>
+                </select>
+              </div>
+              <div className="field">
+                <label>Amount</label>
+                <input value={amountInput} onChange={(e) => setAmountInput(e.target.value)} placeholder="0.01" />
+              </div>
+              <div className="field">
+                <label>rollUnder (1-99)</label>
+                <input value={rollUnderInput} onChange={(e) => setRollUnderInput(e.target.value)} placeholder="49" />
+              </div>
+              <div className="field">
+                <label>Selected token address</label>
+                <input value={selectedTokenAddress} readOnly className="mono" />
+              </div>
             </div>
-            <div className="field">
-              <label>Amount</label>
-              <input value={amountInput} onChange={(e) => setAmountInput(e.target.value)} placeholder="0.01" />
+
+            <div className="actions">
+              <button type="button" disabled={!canTransact} onClick={() => void placeBet()}>
+                Commit + Request
+              </button>
             </div>
-            <div className="field">
-              <label>rollUnder (1-99)</label>
-              <input value={rollUnderInput} onChange={(e) => setRollUnderInput(e.target.value)} placeholder="49" />
+          </article>
+
+          <article className="card span-6">
+            <h2>Manage Bet</h2>
+            <p>Load by bet ID, then reveal/cancel/slash.</p>
+            <div className="form-grid">
+              <div className="field">
+                <label>Bet ID</label>
+                <input
+                  value={lookupBetIdInput}
+                  onChange={(e) => setLookupBetIdInput(e.target.value)}
+                  placeholder="e.g. 1"
+                />
+              </div>
+              <div className="field">
+                <label>Manual Salt (optional)</label>
+                <input
+                  value={manualSalt}
+                  onChange={(e) => setManualSalt(e.target.value)}
+                  placeholder="0x... (66 chars)"
+                  className="mono"
+                />
+              </div>
             </div>
-            <div className="field">
-              <label>Selected token address</label>
-              <input value={selectedTokenAddress} readOnly className="mono" />
+
+            <div className="actions">
+              <button className="secondary" type="button" onClick={() => void loadBetById(activeBetId)}>
+                Refresh Bet
+              </button>
+              <button type="button" disabled={!canTransact} onClick={() => void revealBet()}>
+                Reveal + Settle
+              </button>
+              <button className="warn" type="button" disabled={!canTransact} onClick={() => void cancelBet()}>
+                Cancel If Stale
+              </button>
+              <button className="warn" type="button" disabled={!canTransact} onClick={() => void slashBet()}>
+                Slash Expired
+              </button>
             </div>
-          </div>
+          </article>
 
-          <div className="actions">
-            <button type="button" disabled={!canTransact} onClick={() => void placeBet()}>
-              Commit + Request
-            </button>
-          </div>
-        </article>
-
-        <article className="card span-6">
-          <h2>Manage Bet</h2>
-          <p>Load by bet ID, then reveal/cancel/slash.</p>
-          <div className="form-grid">
-            <div className="field">
-              <label>Bet ID</label>
-              <input value={lookupBetIdInput} onChange={(e) => setLookupBetIdInput(e.target.value)} placeholder="e.g. 1" />
+          <article className="card span-12">
+            <div className="title-row">
+              <h3>Bet Detail</h3>
+              <span className="tag">{BET_STATES[latestBet.state] ?? "Unknown"}</span>
             </div>
-            <div className="field">
-              <label>Manual Salt (optional)</label>
-              <input
-                value={manualSalt}
-                onChange={(e) => setManualSalt(e.target.value)}
-                placeholder="0x... (66 chars)"
-                className="mono"
-              />
+            <div className="kv">
+              <span>Bet ID</span>
+              <span>{latestBet.betId.toString()}</span>
+              <span>Player</span>
+              <code>{latestBet.player || "-"}</code>
+              <span>Token</span>
+              <code>{latestBet.token}</code>
+              <span>Amount</span>
+              <span>
+                {formatAmount(
+                  latestBet.amount,
+                  latestBet.token.toLowerCase() === ZeroAddress.toLowerCase() ? 18 : tokenDecimals,
+                )}{" "}
+                {latestBet.token.toLowerCase() === ZeroAddress.toLowerCase() ? "ETH" : tokenSymbol}
+              </span>
+              <span>rollUnder</span>
+              <span>{latestBet.rollUnder || "-"}</span>
+              <span>Request ID</span>
+              <code>{latestBet.requestId.toString()}</code>
+              <span>Random Word</span>
+              <code>{latestBet.randomWord.toString()}</code>
+              <span>Reveal deadline</span>
+              <span>{toDateTime(latestBet.revealDeadline)}</span>
+              <span>Fulfill Tx</span>
+              <span>
+                {latestBet.fulfillTxHash ? (
+                  <a href={explorerTx(latestBet.fulfillTxHash)} target="_blank" rel="noreferrer">
+                    {latestBet.fulfillTxHash}
+                  </a>
+                ) : (
+                  "-"
+                )}
+              </span>
+              <span>Settle Tx</span>
+              <span>
+                {latestBet.settleTxHash ? (
+                  <a href={explorerTx(latestBet.settleTxHash)} target="_blank" rel="noreferrer">
+                    {latestBet.settleTxHash}
+                  </a>
+                ) : (
+                  "-"
+                )}
+              </span>
             </div>
-          </div>
+          </article>
 
-          <div className="actions">
-            <button className="secondary" type="button" onClick={() => void loadBetById(activeBetId)}>
-              Refresh Bet
-            </button>
-            <button type="button" disabled={!canTransact} onClick={() => void revealBet()}>
-              Reveal + Settle
-            </button>
-            <button className="warn" type="button" disabled={!canTransact} onClick={() => void cancelBet()}>
-              Cancel If Stale
-            </button>
-            <button className="warn" type="button" disabled={!canTransact} onClick={() => void slashBet()}>
-              Slash Expired
-            </button>
-          </div>
-        </article>
+          <article className="card span-12">
+            <h3>Verifiable Randomness Data</h3>
+            <div className="kv">
+              <span>Coordinator</span>
+              <code>{vrfInfo?.coordinator ?? "-"}</code>
+              <span>Subscription ID</span>
+              <code>{vrfInfo?.subscriptionId.toString() ?? "-"}</code>
+              <span>Key Hash</span>
+              <code>{vrfInfo?.keyHash ?? "-"}</code>
+              <span>Request confirmations</span>
+              <span>{vrfInfo?.requestConfirmations ?? "-"}</span>
+              <span>Callback gas limit</span>
+              <span>{vrfInfo?.callbackGasLimit ?? "-"}</span>
+              <span>Dice address</span>
+              <a href={`${SEPOLIA_EXPLORER}/address/${ADDRESSES.diceGame}`} target="_blank" rel="noreferrer">
+                {ADDRESSES.diceGame || "-"}
+              </a>
+            </div>
+          </article>
+        </section>
 
-        <article className="card span-12">
-          <div className="title-row">
-            <h3>Bet Detail</h3>
-            <span className="tag">{BET_STATES[latestBet.state] ?? "Unknown"}</span>
-          </div>
-          <div className="kv">
-            <span>Bet ID</span>
-            <span>{latestBet.betId.toString()}</span>
-            <span>Player</span>
-            <code>{latestBet.player || "-"}</code>
-            <span>Token</span>
-            <code>{latestBet.token}</code>
-            <span>Amount</span>
-            <span>
-              {formatAmount(latestBet.amount, latestBet.token.toLowerCase() === ZeroAddress.toLowerCase() ? 18 : tokenDecimals)}{" "}
-              {latestBet.token.toLowerCase() === ZeroAddress.toLowerCase() ? "ETH" : tokenSymbol}
-            </span>
-            <span>rollUnder</span>
-            <span>{latestBet.rollUnder || "-"}</span>
-            <span>Request ID</span>
-            <code>{latestBet.requestId.toString()}</code>
-            <span>Random Word</span>
-            <code>{latestBet.randomWord.toString()}</code>
-            <span>Reveal deadline</span>
-            <span>{toDateTime(latestBet.revealDeadline)}</span>
-            <span>Fulfill Tx</span>
-            <span>
-              {latestBet.fulfillTxHash ? (
-                <a href={explorerTx(latestBet.fulfillTxHash)} target="_blank" rel="noreferrer">
-                  {latestBet.fulfillTxHash}
-                </a>
-              ) : (
-                "-"
-              )}
-            </span>
-            <span>Settle Tx</span>
-            <span>
-              {latestBet.settleTxHash ? (
-                <a href={explorerTx(latestBet.settleTxHash)} target="_blank" rel="noreferrer">
-                  {latestBet.settleTxHash}
-                </a>
-              ) : (
-                "-"
-              )}
-            </span>
-          </div>
-        </article>
-
-        <article className="card span-12">
-          <h3>Verifiable Randomness Data</h3>
-          <div className="kv">
-            <span>Coordinator</span>
-            <code>{vrfInfo?.coordinator ?? "-"}</code>
-            <span>Subscription ID</span>
-            <code>{vrfInfo?.subscriptionId.toString() ?? "-"}</code>
-            <span>Key Hash</span>
-            <code>{vrfInfo?.keyHash ?? "-"}</code>
-            <span>Request confirmations</span>
-            <span>{vrfInfo?.requestConfirmations ?? "-"}</span>
-            <span>Callback gas limit</span>
-            <span>{vrfInfo?.callbackGasLimit ?? "-"}</span>
-            <span>Dice address</span>
-            <a href={`${SEPOLIA_EXPLORER}/address/${ADDRESSES.diceGame}`} target="_blank" rel="noreferrer">
-              {ADDRESSES.diceGame || "-"}
-            </a>
-          </div>
-        </article>
-      </section>
-
-      {error && <p className="status error">{error}</p>}
-      {!error && <p className="status success">{status}</p>}
-    </main>
+        {error && <p className="status error">{error}</p>}
+        {!error && <p className="status success">{status}</p>}
+      </main>
+    </ClientOnly>
   );
 }

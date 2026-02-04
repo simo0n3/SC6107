@@ -4,6 +4,13 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { BrowserProvider, JsonRpcSigner } from "ethers";
 import { SEPOLIA_CHAIN_ID } from "@/lib/config";
 
+type InjectedProvider = {
+  isMetaMask?: boolean;
+  providers?: InjectedProvider[];
+  on?: (event: string, listener: (...args: unknown[]) => void) => void;
+  removeListener?: (event: string, listener: (...args: unknown[]) => void) => void;
+};
+
 type WalletState = {
   provider: BrowserProvider | null;
   signer: JsonRpcSigner | null;
@@ -15,12 +22,27 @@ type WalletState = {
   refresh: () => Promise<void>;
 };
 
+function getInjectedProvider(): InjectedProvider | null {
+  if (typeof window === "undefined" || !window.ethereum) {
+    return null;
+  }
+
+  const injected = window.ethereum as InjectedProvider;
+  if (Array.isArray(injected.providers) && injected.providers.length > 0) {
+    const metaMask = injected.providers.find((entry) => entry?.isMetaMask);
+    return metaMask ?? injected.providers[0];
+  }
+
+  return injected;
+}
+
 export function useWallet(): WalletState {
   const [provider] = useState<BrowserProvider | null>(() => {
-    if (typeof window === "undefined" || !window.ethereum) {
+    const injected = getInjectedProvider();
+    if (!injected) {
       return null;
     }
-    return new BrowserProvider(window.ethereum);
+    return new BrowserProvider(injected as never);
   });
   const [signer, setSigner] = useState<JsonRpcSigner | null>(null);
   const [address, setAddress] = useState("");
@@ -55,19 +77,19 @@ export function useWallet(): WalletState {
       void refresh();
     }, 0);
 
-    const eth = window.ethereum;
-    if (!eth?.on) return;
+    const injected = getInjectedProvider();
+    if (!injected?.on) return;
 
     const onAccountsChanged = () => void refresh();
     const onChainChanged = () => void refresh();
 
-    eth.on("accountsChanged", onAccountsChanged);
-    eth.on("chainChanged", onChainChanged);
+    injected.on("accountsChanged", onAccountsChanged);
+    injected.on("chainChanged", onChainChanged);
 
     return () => {
       clearTimeout(timer);
-      eth.removeListener?.("accountsChanged", onAccountsChanged);
-      eth.removeListener?.("chainChanged", onChainChanged);
+      injected.removeListener?.("accountsChanged", onAccountsChanged);
+      injected.removeListener?.("chainChanged", onChainChanged);
     };
   }, [provider, refresh]);
 
