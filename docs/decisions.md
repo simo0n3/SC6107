@@ -58,6 +58,7 @@ These are defaults, not immutable. They should be owner-configurable unless note
   - empty draw policy: `RolledOver`
   - rollover policy: carry full pot to next draw of the same token
   - `MAX_TICKETS_PER_TX = 50`
+  - `MAX_TICKETS_PER_DRAW = 10000` (owner-configurable safety cap)
 - Bet limits:
   - min/max policy: global per token (shared by both games)
 - VRF:

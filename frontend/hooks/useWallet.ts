@@ -1,0 +1,87 @@
+"use client";
+
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { BrowserProvider, JsonRpcSigner } from "ethers";
+import { SEPOLIA_CHAIN_ID } from "@/lib/config";
+
+type WalletState = {
+  provider: BrowserProvider | null;
+  signer: JsonRpcSigner | null;
+  address: string;
+  chainId: number | null;
+  hasProvider: boolean;
+  isSepolia: boolean;
+  connect: () => Promise<void>;
+  refresh: () => Promise<void>;
+};
+
+export function useWallet(): WalletState {
+  const [provider] = useState<BrowserProvider | null>(() => {
+    if (typeof window === "undefined" || !window.ethereum) {
+      return null;
+    }
+    return new BrowserProvider(window.ethereum);
+  });
+  const [signer, setSigner] = useState<JsonRpcSigner | null>(null);
+  const [address, setAddress] = useState("");
+  const [chainId, setChainId] = useState<number | null>(null);
+
+  const refresh = useCallback(async () => {
+    if (!provider) return;
+    const accounts = (await provider.send("eth_accounts", [])) as string[];
+    const network = await provider.getNetwork();
+    setChainId(Number(network.chainId));
+
+    if (accounts.length === 0) {
+      setSigner(null);
+      setAddress("");
+      return;
+    }
+
+    const nextSigner = await provider.getSigner();
+    setSigner(nextSigner);
+    setAddress(await nextSigner.getAddress());
+  }, [provider]);
+
+  const connect = useCallback(async () => {
+    if (!provider) return;
+    await provider.send("eth_requestAccounts", []);
+    await refresh();
+  }, [provider, refresh]);
+
+  useEffect(() => {
+    if (!provider) return;
+    const timer = setTimeout(() => {
+      void refresh();
+    }, 0);
+
+    const eth = window.ethereum;
+    if (!eth?.on) return;
+
+    const onAccountsChanged = () => void refresh();
+    const onChainChanged = () => void refresh();
+
+    eth.on("accountsChanged", onAccountsChanged);
+    eth.on("chainChanged", onChainChanged);
+
+    return () => {
+      clearTimeout(timer);
+      eth.removeListener?.("accountsChanged", onAccountsChanged);
+      eth.removeListener?.("chainChanged", onChainChanged);
+    };
+  }, [provider, refresh]);
+
+  return useMemo(
+    () => ({
+      provider,
+      signer,
+      address,
+      chainId,
+      hasProvider: Boolean(provider),
+      isSepolia: chainId === SEPOLIA_CHAIN_ID,
+      connect,
+      refresh,
+    }),
+    [provider, signer, address, chainId, connect, refresh],
+  );
+}

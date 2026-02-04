@@ -136,6 +136,7 @@ struct Bet {
   address player;
   address token;          // address(0) for ETH
   uint96 amount;
+  uint96 maxPayout;       // reserved liability, always >= amount
   uint8 rollUnder;        // 1..99, win if roll <= rollUnder
   uint32 createdAt;
   uint32 revealDeadline;
@@ -165,6 +166,7 @@ State transitions:
 - Payout (includes principal):
   - `payout = amount * (10000 - houseEdgeBps) * 100 / (rollUnder * 10000)`
 - All multiplications use checked math with integer rounding down
+- Liability reservation rule: reserve `max(amount, payout)` to keep refund path solvent
 
 ## 5.2 Lottery
 
@@ -197,17 +199,18 @@ State transitions:
 
 1. `createDraw` -> `Open`
 2. `buyTickets` stays `Open`
-3. `startDraw` after end time -> `RandomRequested`
-4. `onRandomness` -> `RandomFulfilled`
-5. `finalizeDraw`:
+3. `startDraw` after end time:
    - if no ticket: `RolledOver`
-   - else: `Finalized` + payout
+   - else: `RandomRequested`
+4. `onRandomness` -> `RandomFulfilled`
+5. `finalizeDraw` -> `Finalized` + payout
 
 Ticket ownership model for MVP:
 
 - `mapping(uint256 => mapping(uint256 => address)) ticketOwner`
 - Optional optimization later: packed ranges per buyer
 - `MAX_TICKETS_PER_TX` is enforced in `buyTickets` (default: `50`)
+- `MAX_TICKETS_PER_DRAW` is enforced to cap draw growth (default: `10000`)
 
 ## 6. API Surface (MVP)
 

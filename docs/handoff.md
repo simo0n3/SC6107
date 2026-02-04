@@ -2,14 +2,41 @@
 
 Last updated: 2026-02-04
 
-This file is for seamless continuation by another AI model or developer.
+This file enables continuation without relying on chat history.
 
-## 1. Current Status
+## 1. Current Implementation Status
 
-- Option selected: Option 4 (On-Chain Verifiable Random Game Platform)
-- Only source artifact in repo at start: `SC6107_Development_Project.pdf`
-- No contracts or frontend code generated yet
-- Documentation baseline is now created in `docs/`
+Completed:
+
+- Foundry project scaffolded under `contracts/`
+- Core contracts implemented:
+  - `contracts/src/TreasuryVault.sol`
+  - `contracts/src/VRFRouter.sol`
+  - `contracts/src/DiceGame.sol`
+  - `contracts/src/LotteryGame.sol`
+  - `contracts/src/TestERC20.sol`
+- Interface files implemented:
+  - `contracts/src/interfaces/ITreasuryVault.sol`
+  - `contracts/src/interfaces/IVRFRouter.sol`
+  - `contracts/src/interfaces/IVRFGame.sol`
+- Sepolia deployment script implemented:
+  - `contracts/script/Deploy.s.sol`
+- Frontend implemented with pages:
+  - `frontend/app/page.tsx` (overview)
+  - `frontend/app/dice/page.tsx`
+  - `frontend/app/lottery/page.tsx`
+- Frontend wallet hook/component implemented:
+  - `frontend/hooks/useWallet.ts`
+  - `frontend/components/AppHeader.tsx`
+- Environment templates added:
+  - `contracts/.env.example`
+  - `frontend/.env.example`
+
+Build validation completed:
+
+- Contracts: `forge build` passes
+- Frontend: `npm run lint` passes
+- Frontend: `npm run build` passes
 
 ## 2. Source of Truth
 
@@ -19,44 +46,46 @@ Read in this order:
 2. `docs/decisions.md`
 3. `docs/architecture.md`
 
-## 3. Next Execution Steps
+## 3. Important Runtime Behavior Already Implemented
 
-1. Scaffold repository structure (`contracts/`, `frontend/`, etc.)
-2. Initialize Foundry project under `contracts/`
-3. Add dependencies:
-   - OpenZeppelin Contracts 5.x
-   - Chainlink contracts for VRF v2.5
-4. Implement contracts in this order:
-   - `TreasuryVault.sol`
-   - `VRFRouter.sol`
-   - `DiceGame.sol`
-   - `LotteryGame.sol`
-   - `TestERC20.sol`
-5. Add deploy scripts for Sepolia
-6. Initialize Next.js frontend and wire basic pages (`/`, `/dice`, `/lottery`)
+- Dice:
+  - `commitBet` requests VRF immediately
+  - reveal window and 100% principal slashing enforced
+  - stale unfulfilled request can be cancelled/refunded
+- Lottery:
+  - `MAX_TICKETS_PER_TX = 50`
+  - `MAX_TICKETS_PER_DRAW = 10000` (configurable)
+  - no-ticket draw is rolled over at `startDraw` (no VRF request)
+- Treasury:
+  - per-token global min/max bet limits
+  - reserve accounting prevents unsafe owner withdrawal
+- VRF router:
+  - only whitelisted games can request randomness
+  - callback stores fulfillment first, then attempts delivery
+  - manual `retryDelivery` available
 
-## 4. Critical Constraints to Preserve
+## 4. Known Follow-up Tasks (Next Priority)
 
-- Dice must use commit-reveal + reveal deadline + slashing.
-- Randomness must come from VRF only.
-- Do not introduce "retry randomness for same bet" logic.
-- Ensure vault has reserve accounting before allowing owner withdrawals.
-- Keep callback path lightweight and non-blocking.
+1. Deploy to Sepolia and record deployed addresses in docs/README
+2. Configure frontend `.env.local` with deployed addresses
+3. Create at least one live draw for demo readiness
+4. Add tests (unit/integration/fuzz/invariant) and coverage report
+5. Run Slither and finalize `docs/security-analysis.md`
+6. Add gas snapshots and finalize `docs/gas-optimization.md`
 
-## 5. Sepolia VRF Values (planned)
+## 5. Sepolia VRF Values
 
 - Coordinator: `0x9DdfaCa8183c41ad55329BdeeD9F6A8d53168B1B`
 - LINK: `0x779877A7B0D9E8603169DdbD7836e478b4624789`
 - KeyHash (500 gwei): `0x787d74caea10b2b357790d5b5247c2f63d1d91572a9846f780606e4d953677ae`
 
-## 6. Command Shortlist
+## 6. Commands
 
-### Foundry
+### Contracts (current machine setup)
 
 ```powershell
-forge init contracts
-forge build
-forge script script/Deploy.s.sol --rpc-url $env:SEPOLIA_RPC_URL --broadcast
+bash -lc "cd /mnt/e/SC6107/contracts && ~/.foundry/bin/forge build"
+bash -lc "cd /mnt/e/SC6107/contracts && ~/.foundry/bin/forge script script/Deploy.s.sol --rpc-url $SEPOLIA_RPC_URL --broadcast"
 ```
 
 ### Frontend
@@ -64,24 +93,14 @@ forge script script/Deploy.s.sol --rpc-url $env:SEPOLIA_RPC_URL --broadcast
 ```powershell
 cd frontend
 npm install
+npm run lint
+npm run build
 npm run dev
 ```
 
-## 7. Deferred Work (Explicit)
+## 7. Deferred Work (Intentional)
 
-These are intentionally postponed until full feature completion:
+- Full test suite and 80%+ coverage verification
+- Slither report and remediation log
+- Final gas benchmark documentation
 
-- Unit tests
-- Integration tests
-- Fuzz/invariant tests
-- Gas benchmarks
-- Slither report and final security write-up
-
-## 8. Resume Checklist
-
-When a new AI/developer resumes:
-
-1. Review confirmed runtime decisions in `docs/decisions.md` and keep them unchanged unless explicitly re-approved
-2. Keep interfaces aligned with `docs/implementation-spec.md`
-3. Update docs immediately if implementation deviates
-4. Continue in small commits by feature milestone

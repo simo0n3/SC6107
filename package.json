@@ -1,0 +1,11 @@
+{
+  "name": "sc6107-verifiable-random-platform",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "frontend:dev": "npm --prefix frontend run dev",
+    "frontend:lint": "npm --prefix frontend run lint",
+    "frontend:build": "npm --prefix frontend run build"
+  }
+}
+

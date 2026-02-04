@@ -9,7 +9,7 @@ This folder is intentionally detailed so another AI model or developer can conti
 - `docs/architecture.md`  
   Component and data flow architecture (including VRF flow and trust boundaries).
 - `docs/decisions.md`  
-  Confirmed decisions, default parameters, and pending business choices that may still change.
+  Confirmed decisions and runtime parameters (plus optional future tuning knobs).
 - `docs/handoff.md`  
   Current project status, immediate next tasks, and execution commands for quick continuation.
 - `docs/security-analysis.md`  
@@ -25,4 +25,3 @@ If any document conflicts:
 2. `docs/decisions.md`
 3. `docs/architecture.md`
 4. Other files
-
