@@ -18,7 +18,7 @@ import { ToastStack } from "@/components/ToastStack";
 import { useWallet } from "@/hooks/useWallet";
 import { useToasts } from "@/hooks/useToasts";
 import { ADDRESSES } from "@/lib/config";
-import { diceGameAbi, erc20Abi, vrfRouterAbi } from "@/lib/abis";
+import { diceGameAbi, erc20Abi } from "@/lib/abis";
 import { explorerTx, formatAmount, isEthToken } from "@/lib/utils";
 
 const BET_STATES = ["None", "Committed", "RandomRequested", "RandomFulfilled", "Settled", "Slashed", "Cancelled"];
@@ -39,12 +39,6 @@ type BetSnapshot = {
   payoutAmount: bigint;
   fulfillTxHash: string;
   settleTxHash: string;
-};
-
-type VrfInfo = {
-  subscriptionId: bigint;
-  keyHash: string;
-  callbackGasLimit: number;
 };
 
 const emptyBet: BetSnapshot = {
@@ -87,19 +81,17 @@ export default function DicePage() {
   const [latestBet, setLatestBet] = useState<BetSnapshot>(emptyBet);
   const [tokenSymbol, setTokenSymbol] = useState("SC7");
   const [tokenDecimals, setTokenDecimals] = useState(18);
-  const [houseEdgeBps, setHouseEdgeBps] = useState(100);
+  const [houseEdgeBps] = useState(100);
   const [statusText, setStatusText] = useState("Place a bet to start.");
   const [errorText, setErrorText] = useState("");
   const [busyAction, setBusyAction] = useState<"place" | "reveal" | "refresh" | "cancel" | "slash" | "none">("none");
   const [debugBetIdInput, setDebugBetIdInput] = useState("");
   const [manualSalt, setManualSalt] = useState("");
-  const [vrfInfo, setVrfInfo] = useState<VrfInfo | null>(null);
   const [isOwner, setIsOwner] = useState(false);
   const [debugMode, setDebugMode] = useState(false);
 
   const diceReady = isAddress(ADDRESSES.diceGame);
   const tokenReady = isAddress(ADDRESSES.testToken);
-  const routerReady = isAddress(ADDRESSES.vrfRouter);
   const canTransact = wallet.signer && wallet.isSepolia && diceReady;
   const showDebug = debugMode || isOwner;
 
@@ -150,9 +142,6 @@ export default function DicePage() {
       if (!wallet.provider || !diceReady) return;
       try {
         const diceRead = new Contract(ADDRESSES.diceGame, diceGameAbi, wallet.provider);
-        const edge = await diceRead.houseEdgeBps();
-        setHouseEdgeBps(Number(edge));
-
         if (wallet.address) {
           const owner = await diceRead.owner();
           setIsOwner(owner.toLowerCase() === wallet.address.toLowerCase());
@@ -177,25 +166,9 @@ export default function DicePage() {
       }
     }
 
-    async function loadVrf() {
-      if (!wallet.provider || !routerReady || !wallet.isSepolia) return;
-      try {
-        const router = new Contract(ADDRESSES.vrfRouter, vrfRouterAbi, wallet.provider);
-        const cfg = await router.getVrfConfig();
-        setVrfInfo({
-          subscriptionId: cfg[1],
-          keyHash: cfg[2],
-          callbackGasLimit: Number(cfg[4]),
-        });
-      } catch {
-        setVrfInfo(null);
-      }
-    }
-
     void bootstrap();
     void loadTokenMeta();
-    void loadVrf();
-  }, [wallet.provider, wallet.address, wallet.isSepolia, diceReady, tokenReady, routerReady]);
+  }, [wallet.provider, wallet.address, diceReady, tokenReady]);
 
   const loadBetById = useCallback(async (betId: bigint) => {
     if (!wallet.provider || !diceReady || betId <= 0n) return;
@@ -596,23 +569,9 @@ export default function DicePage() {
                 Slash Expired
               </button>
             </div>
-            <div className="field-grid">
-              <div className="field">
-                <label>Bet state</label>
-                <input readOnly value={BET_STATES[latestBet.state] ?? "Unknown"} />
-              </div>
-              <div className="field">
-                <label>VRF subscription</label>
-                <input readOnly value={vrfInfo?.subscriptionId?.toString() ?? "-"} className="mono" />
-              </div>
-              <div className="field">
-                <label>Key hash</label>
-                <input readOnly value={vrfInfo?.keyHash ?? "-"} className="mono" />
-              </div>
-              <div className="field">
-                <label>Callback gas</label>
-                <input readOnly value={vrfInfo?.callbackGasLimit?.toString() ?? "-"} className="mono" />
-              </div>
+            <div className="field">
+              <label>Bet state</label>
+              <input readOnly value={BET_STATES[latestBet.state] ?? "Unknown"} />
             </div>
           </section>
         )}

@@ -8,7 +8,7 @@ import { ToastStack } from "@/components/ToastStack";
 import { useWallet } from "@/hooks/useWallet";
 import { useToasts } from "@/hooks/useToasts";
 import { ADDRESSES } from "@/lib/config";
-import { erc20Abi, lotteryGameAbi, vrfRouterAbi } from "@/lib/abis";
+import { erc20Abi, lotteryGameAbi } from "@/lib/abis";
 import { explorerTx, formatAmount, isEthToken, shortAddress } from "@/lib/utils";
 
 type DrawSnapshot = {
@@ -33,12 +33,6 @@ type RecentDraw = {
   prize: bigint;
   status: number;
   verifyTxHash: string;
-};
-
-type VrfInfo = {
-  subscriptionId: bigint;
-  keyHash: string;
-  callbackGasLimit: number;
 };
 
 const DRAW_STATUS = ["None", "Open", "RandomRequested", "RandomFulfilled", "Finalized", "RolledOver", "TimedOut"];
@@ -80,19 +74,15 @@ export default function LotteryPage() {
   const [busyAction, setBusyAction] = useState<"none" | "buy" | "start" | "finalize" | "timeout" | "refund" | "refresh" | "create">(
     "none",
   );
-  const [vrfInfo, setVrfInfo] = useState<VrfInfo | null>(null);
   const [isOwner, setIsOwner] = useState(false);
 
-  const [debugDrawIdInput, setDebugDrawIdInput] = useState("");
   const [createTokenChoice, setCreateTokenChoice] = useState<"ETH" | "ERC20">("ETH");
   const [createTicketPriceInput, setCreateTicketPriceInput] = useState("10");
   const [createEndMinutesInput, setCreateEndMinutesInput] = useState("5");
-  const [createHouseEdgeInput, setCreateHouseEdgeInput] = useState("100");
   const [debugMode, setDebugMode] = useState(false);
 
   const lotteryReady = isAddress(ADDRESSES.lotteryGame);
   const tokenReady = isAddress(ADDRESSES.testToken);
-  const routerReady = isAddress(ADDRESSES.vrfRouter);
   const canTransact = wallet.signer && wallet.isSepolia && lotteryReady;
   const showDebug = debugMode || isOwner;
   const selectedDrawTokenIsEth = currentDraw.token.toLowerCase() === ZeroAddress.toLowerCase();
@@ -233,24 +223,11 @@ export default function LotteryPage() {
       } catch {
         setIsOwner(false);
       }
-
-      if (!routerReady || !wallet.isSepolia) return;
-      try {
-        const router = new Contract(ADDRESSES.vrfRouter, vrfRouterAbi, wallet.provider);
-        const cfg = await router.getVrfConfig();
-        setVrfInfo({
-          subscriptionId: cfg[1],
-          keyHash: cfg[2],
-          callbackGasLimit: Number(cfg[4]),
-        });
-      } catch {
-        setVrfInfo(null);
-      }
     }
 
     void loadTokenMeta();
     void loadOwnerAndVrf();
-  }, [wallet.provider, wallet.address, wallet.isSepolia, lotteryReady, tokenReady, routerReady]);
+  }, [wallet.provider, wallet.address, lotteryReady, tokenReady]);
 
   useEffect(() => {
     async function bootstrapDraws() {
@@ -262,7 +239,6 @@ export default function LotteryPage() {
           setStatusText("No draws created yet.");
           return;
         }
-        setDebugDrawIdInput(latestDrawId.toString());
         await Promise.all([loadDrawById(latestDrawId), loadRecentDraws(latestDrawId)]);
       } catch (err) {
         setStatusText(`Failed to load draws: ${(err as Error).message}`);
@@ -353,7 +329,7 @@ export default function LotteryPage() {
       const token = createTokenChoice === "ETH" ? ZeroAddress : ADDRESSES.testToken;
       const decimals = createTokenChoice === "ETH" ? 18 : tokenDecimals;
       const ticketPrice = parseUnits(createTicketPriceInput, decimals);
-      const houseEdge = Number(createHouseEdgeInput);
+      const houseEdge = 100;
       const endMinutes = Number(createEndMinutesInput);
       const nowTs = Math.floor(Date.now() / 1000);
       const endTime = nowTs + endMinutes * 60;
@@ -377,7 +353,6 @@ export default function LotteryPage() {
       }
 
       if (newDrawId > 0n) {
-        setDebugDrawIdInput(newDrawId.toString());
         await Promise.all([loadDrawById(newDrawId), loadRecentDraws(newDrawId)]);
       }
     } catch (err) {
@@ -416,7 +391,7 @@ export default function LotteryPage() {
             <div>
               <small className="helper">Ends in</small>
               <div className="countdown">{countdownLabel}</div>
-              <small className="helper">Draw #{currentDraw.drawId.toString()} · {DRAW_STATUS[currentDraw.status] ?? "Unknown"}</small>
+              <small className="helper">Draw #{currentDraw.drawId.toString()} | {DRAW_STATUS[currentDraw.status] ?? "Unknown"}</small>
             </div>
           </div>
 
@@ -502,7 +477,7 @@ export default function LotteryPage() {
                   <strong>Draw #{row.drawId.toString()}</strong>
                   <div className="list-meta">
                     {row.status === 4
-                      ? `Winner ${shortAddress(row.winner)} · Prize ${formatAmount(row.prize, selectedDrawTokenIsEth ? 18 : tokenDecimals, 4)} ${activeTokenSymbol}`
+                      ? `Winner ${shortAddress(row.winner)} | Prize ${formatAmount(row.prize, selectedDrawTokenIsEth ? 18 : tokenDecimals, 4)} ${activeTokenSymbol}`
                       : DRAW_STATUS[row.status] ?? "Unknown"}
                   </div>
                 </div>
@@ -525,8 +500,8 @@ export default function LotteryPage() {
 
             <div className="field-grid">
               <div className="field">
-                <label>Draw ID</label>
-                <input value={debugDrawIdInput} onChange={(e) => setDebugDrawIdInput(e.target.value)} />
+                <label>Current draw</label>
+                <input value={currentDraw.drawId.toString()} readOnly />
               </div>
               <div className="field">
                 <label>Load / Operate</label>
@@ -536,13 +511,18 @@ export default function LotteryPage() {
                     type="button"
                     disabled={busyAction !== "none"}
                     onClick={() => {
-                      const drawId = BigInt(debugDrawIdInput || "0");
+                      const drawId = currentDraw.drawId;
                       if (drawId > 0n) void loadDrawById(drawId);
                     }}
                   >
                     Refresh
                   </button>
-                  <button className="btn danger" type="button" disabled={!canTransact || busyAction !== "none"} onClick={() => void runTx("timeout", BigInt(debugDrawIdInput || "0"))}>
+                  <button
+                    className="btn danger"
+                    type="button"
+                    disabled={!canTransact || busyAction !== "none" || currentDraw.drawId <= 0n}
+                    onClick={() => void runTx("timeout", currentDraw.drawId)}
+                  >
                     Timeout Draw
                   </button>
                 </div>
@@ -568,30 +548,11 @@ export default function LotteryPage() {
                 <label>End after (minutes)</label>
                 <input value={createEndMinutesInput} onChange={(e) => setCreateEndMinutesInput(e.target.value)} />
               </div>
-              <div className="field">
-                <label>House edge (bps)</label>
-                <input value={createHouseEdgeInput} onChange={(e) => setCreateHouseEdgeInput(e.target.value)} />
-              </div>
             </div>
             <div className="cta-row">
               <button className="btn" type="button" disabled={!canTransact || busyAction !== "none"} onClick={() => void createDraw()}>
                 {busyAction === "create" ? "Waiting..." : "Create Draw"}
               </button>
-            </div>
-
-            <div className="field-grid">
-              <div className="field">
-                <label>VRF subscription</label>
-                <input readOnly value={vrfInfo?.subscriptionId?.toString() ?? "-"} className="mono" />
-              </div>
-              <div className="field">
-                <label>Key hash</label>
-                <input readOnly value={vrfInfo?.keyHash ?? "-"} className="mono" />
-              </div>
-              <div className="field">
-                <label>Callback gas</label>
-                <input readOnly value={vrfInfo?.callbackGasLimit?.toString() ?? "-"} className="mono" />
-              </div>
             </div>
           </section>
         )}
