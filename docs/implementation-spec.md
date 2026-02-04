@@ -73,6 +73,9 @@ Core rules:
 - Only whitelisted game contracts can call payout-related methods
 - `withdraw` must not reduce free balance below reserved obligations
 - Use `SafeERC20` for all token transfers
+- Store global per-token betting limits shared by all games:
+  - `minBet[token]`
+  - `maxBet[token]`
 
 ## 4.2 VRFRouter (single Chainlink consumer)
 
@@ -204,6 +207,7 @@ Ticket ownership model for MVP:
 
 - `mapping(uint256 => mapping(uint256 => address)) ticketOwner`
 - Optional optimization later: packed ranges per buyer
+- `MAX_TICKETS_PER_TX` is enforced in `buyTickets` (default: `50`)
 
 ## 6. API Surface (MVP)
 
@@ -216,6 +220,8 @@ The following external methods are required.
 - `withdrawETH(uint256 amount, address to) onlyOwner`
 - `withdrawToken(address token, uint256 amount, address to) onlyOwner`
 - `setGameWhitelist(address game, bool allowed) onlyOwner`
+- `setTokenBetLimits(address token, uint96 minBet, uint96 maxBet) onlyOwner`
+- `getTokenBetLimits(address token) view returns (uint96 minBet, uint96 maxBet)`
 - `increaseReserved(address token, uint256 amount) onlyGame`
 - `decreaseReserved(address token, uint256 amount) onlyGame`
 - `payout(address token, address to, uint256 amount) onlyGame nonReentrant`
@@ -236,7 +242,7 @@ The following external methods are required.
 - `revealAndSettle(uint256 betId, bytes32 salt)`
 - `slashExpired(uint256 betId)`
 - `cancelIfUnfulfilled(uint256 betId)`
-- admin setters: bet limits, house edge, reveal window, max wait, pause
+- admin setters: house edge, reveal window, max wait, pause
 - view helpers: `getBet`, `previewPayout`, `canSlash`, `canCancel`
 
 ## 6.4 LotteryGame
@@ -245,7 +251,7 @@ The following external methods are required.
 - `buyTickets(uint256 drawId, uint32 count) payable`
 - `startDraw(uint256 drawId)`
 - `finalizeDraw(uint256 drawId)`
-- admin setters: max tickets per tx, pause
+- admin setters: max tickets per tx (`default=50`), pause
 - view helpers: `getDraw`, `getTicketOwner`, `getCurrentPrize`
 
 ## 7. Events
@@ -376,4 +382,3 @@ Phase 1 is complete when:
 4. ETH and ERC20 flow both work on both games
 5. Frontend can execute above flows through MetaMask
 6. Verifiability panel shows live VRF metadata
-

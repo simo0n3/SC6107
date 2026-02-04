@@ -81,8 +81,7 @@ These are intentionally postponed until full feature completion:
 
 When a new AI/developer resumes:
 
-1. Confirm unresolved items in `docs/decisions.md`
+1. Review confirmed runtime decisions in `docs/decisions.md` and keep them unchanged unless explicitly re-approved
 2. Keep interfaces aligned with `docs/implementation-spec.md`
 3. Update docs immediately if implementation deviates
 4. Continue in small commits by feature milestone
-

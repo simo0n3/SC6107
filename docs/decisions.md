@@ -52,27 +52,27 @@ These are defaults, not immutable. They should be owner-configurable unless note
   - `revealWindow = 10 minutes`
   - `maxWaitForFulfill = 30 minutes`
   - `rollUnder` range: `1..99` (win if `roll <= rollUnder`)
+  - slashing policy for expired reveal: `100% principal forfeiture`
 - Lottery:
   - draw configured per round (`startTime`, `endTime`, `ticketPrice`, `token`)
   - empty draw policy: `RolledOver`
+  - rollover policy: carry full pot to next draw of the same token
+  - `MAX_TICKETS_PER_TX = 50`
+- Bet limits:
+  - min/max policy: global per token (shared by both games)
 - VRF:
   - `requestConfirmations = 3`
   - `callbackGasLimit = 300000`
   - `numWords = 1`
 
-## 3. Pending Decisions (Need User Confirmation)
+## 3. Decision Resolution Status
 
-1. Slashing strictness for expired dice reveals:
-   - current default: slash 100% of principal
-   - alternative: slash partial ratio (weaker anti-selective-reveal)
-2. Lottery rollover fund handling:
-   - current default: carry full pot to next draw of same token
-3. Max ticket count limits:
-   - need practical cap per tx and per draw for gas safety
-4. Min/max bet policy:
-   - global per token vs per-game per token
+All previously pending decisions are now confirmed by user input (2026-02-04).
 
-If not explicitly changed, current defaults stand.
+## 3.1 Optional future tuning (not blocking implementation)
+
+- Add `MAX_TICKETS_PER_DRAW` to hard-cap draw size for gas and storage predictability.
+- If needed later, split global min/max into per-game override.
 
 ## 4. Known Risks and Controls
 
@@ -84,4 +84,3 @@ If not explicitly changed, current defaults stand.
   Control: vault reserved-liability accounting.
 - Risk: event-only off-chain assumptions  
   Control: expose on-chain view methods for all critical data.
-

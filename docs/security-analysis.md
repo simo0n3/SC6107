@@ -73,7 +73,6 @@ Status: Template created; findings to be added after implementation
 
 ## 6. Open Security Questions
 
-- Should dice slashing be 100% principal or configurable ratio?
+- Dice slashing policy is fixed at 100% principal forfeiture (confirmed).
 - Should large lottery payouts include delayed claim pattern?
 - Should owner parameter changes have timelock?
-
