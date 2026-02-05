@@ -88,8 +88,8 @@ contract GameAchievementIntegrationTest is Test {
         dice.setAchievementNft(address(revertingNft));
 
         uint256 betId = _settleDiceBetFor(PLAYER);
-        (,,,,,,,,,,, uint8 state) = dice.bets(betId);
-        assertEq(state, 4);
+        (,,,,,,,,,,, DiceGame.BetState state) = dice.bets(betId);
+        assertEq(uint8(state), 4);
     }
 
     function test_LotteryBuyStillSucceedsWhenAchievementMintReverts() external {

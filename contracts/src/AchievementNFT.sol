@@ -27,4 +27,8 @@ contract AchievementNFT is ERC721, AccessControl {
     function hasAchievement(address user) external view returns (bool) {
         return minted[user];
     }
+
+    function supportsInterface(bytes4 interfaceId) public view override(ERC721, AccessControl) returns (bool) {
+        return super.supportsInterface(interfaceId);
+    }
 }
