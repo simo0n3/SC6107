@@ -125,6 +125,25 @@ select {
   color: var(--warning);
 }
 
+.achievement-badge {
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  border: 1px solid #236147;
+  background: radial-gradient(circle at 30% 25%, #43e5b4 0%, #1a8f6b 38%, #12382a 100%);
+  color: #053224;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 8px 18px rgba(8, 38, 28, 0.42);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+
+.achievement-badge svg {
+  width: 16px;
+  height: 16px;
+}
+
 .address-label {
   border: none;
   background: transparent;

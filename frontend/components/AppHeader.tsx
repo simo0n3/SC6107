@@ -91,7 +91,16 @@ export function AppHeader({ address, chainId, provider, hasProvider, isSepolia, 
               {isSepolia ? "Sepolia" : `Wrong network (${chainId ?? "?"})`}
             </span>
             <AddressLabel address={address} provider={provider} className="pill mono" onCopied={onAddressCopied} />
-            {hasAchievement && <span className="pill good">Achievement Unlocked</span>}
+            {hasAchievement && (
+              <span className="achievement-badge" title="Achievement unlocked" aria-label="Achievement unlocked">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    d="M8.5 3.5h7l1 4.2a6 6 0 1 1-9 0l1-4.2Zm2.1 11.6L12 14.2l1.4.9-.4-1.6 1.3-1-1.6-.1L12 10.9l-.7 1.5-1.6.1 1.3 1-.4 1.6Z"
+                    fill="currentColor"
+                  />
+                </svg>
+              </span>
+            )}
           </>
         )}
         {chainId !== null && chainId !== SEPOLIA_CHAIN_ID && (

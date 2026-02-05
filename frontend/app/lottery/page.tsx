@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Contract, Interface, ZeroAddress, isAddress, parseUnits } from "ethers";
+import { AbiCoder, Contract, Interface, ZeroAddress, isAddress, parseUnits } from "ethers";
 import { AddressLabel } from "@/components/AddressLabel";
 import { AppHeader } from "@/components/AppHeader";
 import { ClientOnly } from "@/components/ClientOnly";
@@ -60,9 +60,100 @@ const emptyDraw: DrawSnapshot = {
   finalizeTxHash: "",
 };
 
+const abiCoder = AbiCoder.defaultAbiCoder();
+
+function asHexData(value: unknown): string | null {
+  if (typeof value === "string" && /^0x[0-9a-fA-F]+$/.test(value)) return value;
+  return null;
+}
+
+function extractRevertData(err: unknown, message: string): string | null {
+  const anyErr = err as {
+    data?: unknown;
+    error?: { data?: unknown };
+    info?: { error?: { data?: unknown } };
+    revert?: { data?: unknown };
+  };
+  const direct = [anyErr?.data, anyErr?.error?.data, anyErr?.info?.error?.data, anyErr?.revert?.data];
+
+  for (const candidate of direct) {
+    const parsed = asHexData(candidate);
+    if (parsed) return parsed;
+  }
+
+  const fromMessage = message.match(/data="?((0x)[0-9a-fA-F]+)"?/i);
+  if (fromMessage?.[1]) return fromMessage[1];
+  return null;
+}
+
+function decodeCustomError(data: string): string | null {
+  if (!data.startsWith("0x") || data.length < 10) return null;
+  const selector = data.slice(0, 10).toLowerCase();
+  const payload = `0x${data.slice(10)}`;
+
+  try {
+    const decodeTuple = <T,>(types: string[]): T => abiCoder.decode(types, payload) as unknown as T;
+
+    switch (selector) {
+      case "0x336f5b32": { // DrawNotStarted(uint256,uint256)
+        const [startTs] = decodeTuple<[bigint, bigint]>(["uint256", "uint256"]);
+        return `Draw not started yet. Start time: ${new Date(Number(startTs) * 1000).toLocaleString()}.`;
+      }
+      case "0xf7aea3c5": { // DrawNotEnded(uint256,uint256)
+        const [endTs, nowTs] = decodeTuple<[bigint, bigint]>(["uint256", "uint256"]);
+        if (nowTs < endTs) {
+          return `Draw not ended yet. You can start after ${new Date(Number(endTs) * 1000).toLocaleString()}.`;
+        }
+        return "Draw already ended. Betting is closed for this draw.";
+      }
+      case "0xd6ec17e3": { // TooManyTickets(uint256,uint256)
+        const [, maxAllowed] = decodeTuple<[bigint, bigint]>(["uint256", "uint256"]);
+        return `Too many tickets in one order. Max per transaction is ${maxAllowed.toString()}.`;
+      }
+      case "0x675bb9d9": // DrawSoldOut(uint256,uint256)
+        return "This draw is sold out. Please choose another draw.";
+      case "0xd07e8976": { // InvalidState(uint8)
+        const [state] = decodeTuple<[number]>(["uint8"]);
+        return `Action unavailable: draw is in ${DRAW_STATUS[state] ?? `state #${state}`}.`;
+      }
+      case "0x725adb2b": { // FulfillmentWaitNotExceeded(uint256,uint256)
+        const [eligibleAt] = decodeTuple<[bigint, bigint]>(["uint256", "uint256"]);
+        return `Too early to timeout. You can retry after ${new Date(Number(eligibleAt) * 1000).toLocaleString()}.`;
+      }
+      case "0x55e3fc17": // NoRefundAvailable(uint256,address)
+        return "No refund is available for this wallet in this draw.";
+      case "0xba301997": // RefundAlreadyClaimed(uint256,address)
+        return "Refund already claimed for this draw.";
+      case "0xc480be2e": // InsufficientLiquidity(address,uint256,uint256)
+        return "Vault liquidity is insufficient for this action right now.";
+      case "0xe450d38c": // ERC20InsufficientBalance(address,uint256,uint256)
+        return "SC7 balance is insufficient for this purchase.";
+      case "0xfb8f41b2": // ERC20InsufficientAllowance(address,uint256,uint256)
+        return "SC7 allowance is insufficient. Please approve again and retry.";
+      case "0x2c5211c6": // InvalidAmount()
+        return "Invalid amount (check ticket count, ticket price, token limits, and draw window).";
+      case "0x6d963f88": // EthTransferFailed()
+        return "ETH transfer failed. Please retry.";
+      case "0xb8f70d8a": // NotWhitelistedGame(address)
+        return "Lottery contract is not whitelisted in TreasuryVault.";
+      default:
+        return null;
+    }
+  } catch {
+    return null;
+  }
+}
+
 function parseError(err: unknown): string {
   const msg = (err as { shortMessage?: string; message?: string })?.shortMessage ?? (err as Error)?.message ?? "Failed.";
+  const revertData = extractRevertData(err, msg);
+  if (revertData) {
+    const decoded = decodeCustomError(revertData);
+    if (decoded) return decoded;
+  }
+
   if (msg.includes("user rejected")) return "Transaction cancelled in wallet.";
+  if (msg.includes("insufficient funds")) return "Wallet ETH is insufficient for gas.";
   if (msg.includes("CALL_EXCEPTION")) return "This action is not available in the current draw state.";
   return msg;
 }
