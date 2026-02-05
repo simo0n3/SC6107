@@ -40,8 +40,10 @@ type RecentDraw = {
 };
 
 const DRAW_STATUS = ["None", "Open", "RandomRequested", "RandomFulfilled", "Finalized", "RolledOver", "TimedOut"];
-const ONGOING_STATUSES = new Set([1, 2, 3]);
-const FINISHED_STATUSES = new Set([4, 5, 6]);
+
+function isOngoingDraw(status: number, endTime: number, nowSec: number): boolean {
+  return status === 1 && nowSec < endTime;
+}
 
 const emptyDraw: DrawSnapshot = {
   drawId: 0n,
@@ -215,8 +217,14 @@ export default function LotteryPage() {
   const isWaitingRandomness = currentDraw.status === 2;
   const isFinalized = currentDraw.status === 4;
   const isTimedOut = currentDraw.status === 6;
-  const ongoingDraws = useMemo(() => recentDraws.filter((row) => ONGOING_STATUSES.has(row.status)), [recentDraws]);
-  const finishedDraws = useMemo(() => recentDraws.filter((row) => FINISHED_STATUSES.has(row.status)), [recentDraws]);
+  const ongoingDraws = useMemo(
+    () => recentDraws.filter((row) => isOngoingDraw(row.status, row.endTime, nowSec)),
+    [recentDraws, nowSec],
+  );
+  const finishedDraws = useMemo(
+    () => recentDraws.filter((row) => !isOngoingDraw(row.status, row.endTime, nowSec)),
+    [recentDraws, nowSec],
+  );
 
   const currentBetHint = useMemo(() => {
     if (currentDraw.drawId <= 0n) return "";
@@ -371,9 +379,10 @@ export default function LotteryPage() {
         }
         let preferredDrawId = latestDrawId;
         let inspected = 0;
+        const nowTs = Math.floor(Date.now() / 1000);
         for (let drawId = latestDrawId; drawId > 0n && inspected < 20; drawId--) {
           const info = await lottery.draws(drawId);
-          if (ONGOING_STATUSES.has(Number(info.status))) {
+          if (isOngoingDraw(Number(info.status), Number(info.endTime), nowTs)) {
             preferredDrawId = drawId;
             break;
           }
@@ -509,8 +518,6 @@ export default function LotteryPage() {
   function getOngoingLabel(row: RecentDraw): string {
     if (row.status === 1 && nowSec < row.startTime) return "Not Started";
     if (row.status === 1 && nowSec >= row.startTime && nowSec < row.endTime) return "Betting Open";
-    if (row.status === 2) return "Waiting Randomness";
-    if (row.status === 3) return "Ready to Finalize";
     return DRAW_STATUS[row.status] ?? "Unknown";
   }
 
@@ -518,9 +525,7 @@ export default function LotteryPage() {
     if (row.status === 1 && nowSec < row.startTime) {
       return `Starts in ${formatRemaining(row.startTime - nowSec)}`;
     }
-    if (row.status === 1) return "Betting open";
-    if (row.status === 2) return "Waiting randomness";
-    if (row.status === 3) return "Ready to finalize";
+    if (row.status === 1 && nowSec < row.endTime) return "Betting open";
     return DRAW_STATUS[row.status] ?? "Unknown";
   }
 
@@ -537,6 +542,19 @@ export default function LotteryPage() {
           onConnect={wallet.connect}
           onAddressCopied={() => pushToast("Copied", "confirmed")}
         />
+
+        <section className="card">
+          <h2>How Lottery Works</h2>
+          <p className="helper" style={{ marginTop: "8px" }}>
+            Buy tickets before countdown ends. After draw closes, randomness picks one winner on-chain.
+          </p>
+          <div className="helper" style={{ marginTop: "10px", display: "grid", gap: "5px" }}>
+            <span>1) Pick an open draw and set ticket count.</span>
+            <span>2) Click Buy Tickets before the timer reaches 00:00.</span>
+            <span>3) After close: Start Draw -&gt; wait randomness -&gt; Finalize.</span>
+            <span>4) Winner receives jackpot minus 1% house edge.</span>
+          </div>
+        </section>
 
         <section className="card">
           <h2>Current Draw</h2>
@@ -699,6 +717,12 @@ export default function LotteryPage() {
                         "No winner. Pot rolled over."
                       ) : row.status === 6 ? (
                         "Timed out. Refund available."
+                      ) : row.status === 3 ? (
+                        "Randomness received. Ready to finalize."
+                      ) : row.status === 2 ? (
+                        "Betting closed. Waiting for randomness."
+                      ) : row.status === 1 && nowSec >= row.endTime ? (
+                        "Betting closed. Waiting to start draw."
                       ) : (
                         DRAW_STATUS[row.status] ?? "Unknown"
                       )}

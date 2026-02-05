@@ -124,12 +124,12 @@ export default function DicePage() {
   }, [latestBet.state]);
 
   const nowSec = Math.floor(Date.now() / 1000);
-  const roundStatus: "Waiting" | "Ready" | "Result" = useMemo(() => {
+  const roundStatus: "Idle" | "Waiting" | "Ready" | "Result" = useMemo(() => {
+    if (latestBet.betId === 0n || latestBet.state === 0) return "Idle";
     if (latestBet.state === 2) return "Waiting";
     if (latestBet.state === 3 && nowSec <= latestBet.revealDeadline) return "Ready";
-    if (latestBet.state >= 4 || latestBet.state === 3) return "Result";
-    return "Waiting";
-  }, [latestBet.state, latestBet.revealDeadline, nowSec]);
+    return "Result";
+  }, [latestBet.betId, latestBet.state, latestBet.revealDeadline, nowSec]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -398,6 +398,18 @@ export default function DicePage() {
           onAddressCopied={() => pushToast("Copied", "confirmed")}
         />
 
+        <section className="card">
+          <h2>How Dice Works</h2>
+          <p className="helper" style={{ marginTop: "8px" }}>
+            Choose a target number from 1 to 99. If the final roll is less than or equal to your target, you win.
+          </p>
+          <div className="helper" style={{ marginTop: "10px", display: "grid", gap: "5px" }}>
+            <span>1) Set token, bet amount, and target number.</span>
+            <span>2) Click Place Bet, then wait for VRF randomness.</span>
+            <span>3) Click Reveal &amp; Settle to get Win/Lose and payout.</span>
+          </div>
+        </section>
+
         <section className="grid-2">
           <article className="card">
             <h2>Bet Slip</h2>
@@ -451,17 +463,6 @@ export default function DicePage() {
               </button>
             </div>
 
-            <div className="number-grid" style={{ marginTop: "12px" }}>
-              <div className="number-row">
-                <small>How it works</small>
-                <div className="helper" style={{ marginTop: "6px", display: "grid", gap: "4px" }}>
-                  <span>1) Place Bet to lock your amount and target number.</span>
-                  <span>2) Chainlink VRF generates one random roll from 1 to 100.</span>
-                  <span>3) Roll less than or equal to your target means win; otherwise lose.</span>
-                </div>
-              </div>
-            </div>
-
             {latestBet.betId > 0n && (
               <div className="progress">
                 <small className="helper">Progress</small>
@@ -480,6 +481,14 @@ export default function DicePage() {
               <span className={`status-badge ${statusClass}`}>{roundStatus}</span>
             </div>
             <p className="helper">{latestBet.betId > 0n ? `Bet #${latestBet.betId.toString()}` : "No active round yet."}</p>
+
+            {roundStatus === "Idle" && (
+              <div className="number-grid" style={{ marginTop: "16px" }}>
+                <div className="number-row">
+                  <span className="helper">Place a bet to start a round.</span>
+                </div>
+              </div>
+            )}
 
             {roundStatus === "Waiting" && (
               <div className="number-grid" style={{ marginTop: "16px" }}>

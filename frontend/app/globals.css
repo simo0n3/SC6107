@@ -293,6 +293,12 @@ button.address-label {
   font-size: 12px;
 }
 
+.status-badge.idle {
+  color: var(--muted);
+  background: #0f1625;
+  border-color: var(--line);
+}
+
 .status-badge.waiting {
   color: #f1cb90;
   background: #30210f;
