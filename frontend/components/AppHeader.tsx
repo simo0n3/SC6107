@@ -90,7 +90,7 @@ export function AppHeader({ address, chainId, provider, hasProvider, isSepolia, 
             <span className={`pill ${isSepolia ? "good" : "warn"}`}>
               {isSepolia ? "Sepolia" : `Wrong network (${chainId ?? "?"})`}
             </span>
-            <AddressLabel address={address} className="pill mono" onCopied={onAddressCopied} />
+            <AddressLabel address={address} provider={provider} className="pill mono" onCopied={onAddressCopied} />
             {hasAchievement && <span className="pill good">Achievement Unlocked</span>}
           </>
         )}

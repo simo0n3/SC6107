@@ -2,17 +2,18 @@
 
 import { isAddress } from "ethers";
 import { useEffect, useMemo, useState } from "react";
-import { resolveEns } from "@/lib/ens";
+import { resolveEns, type EnsLookupProvider } from "@/lib/ens";
 import { shortAddress } from "@/lib/utils";
 
 type Props = {
   address: string;
   className?: string;
   copyable?: boolean;
+  provider?: EnsLookupProvider | null;
   onCopied?: () => void;
 };
 
-export function AddressLabel({ address, className, copyable = true, onCopied }: Props) {
+export function AddressLabel({ address, className, copyable = true, provider = null, onCopied }: Props) {
   const fallback = useMemo(() => (isAddress(address) ? shortAddress(address) : "-"), [address]);
   const [resolved, setResolved] = useState<{ address: string; name: string | null }>({
     address: "",
@@ -30,7 +31,7 @@ export function AddressLabel({ address, className, copyable = true, onCopied }: 
       active = false;
     };
 
-    void resolveEns(address).then((name) => {
+    void resolveEns(address, provider).then((name) => {
       if (!active) return;
       setResolved({ address, name });
     });
@@ -38,7 +39,7 @@ export function AddressLabel({ address, className, copyable = true, onCopied }: 
     return () => {
       active = false;
     };
-  }, [address]);
+  }, [address, provider]);
 
   async function copyAddress() {
     if (!copyable || !isAddress(address) || typeof navigator === "undefined" || !navigator.clipboard) return;

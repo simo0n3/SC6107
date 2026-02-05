@@ -486,6 +486,11 @@ button.address-label {
   align-items: center;
 }
 
+.list-row.active {
+  border-color: #2f6b4d;
+  background: #102234;
+}
+
 .list-meta {
   font-size: 13px;
   color: var(--muted);

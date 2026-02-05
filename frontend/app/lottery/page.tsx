@@ -17,6 +17,7 @@ type DrawSnapshot = {
   token: string;
   ticketPrice: bigint;
   houseEdgeBps: number;
+  startTime: number;
   endTime: number;
   status: number;
   requestId: bigint;
@@ -33,16 +34,21 @@ type RecentDraw = {
   winner: string;
   prize: bigint;
   status: number;
+  startTime: number;
+  endTime: number;
   verifyTxHash: string;
 };
 
 const DRAW_STATUS = ["None", "Open", "RandomRequested", "RandomFulfilled", "Finalized", "RolledOver", "TimedOut"];
+const ONGOING_STATUSES = new Set([1, 2, 3]);
+const FINISHED_STATUSES = new Set([4, 5, 6]);
 
 const emptyDraw: DrawSnapshot = {
   drawId: 0n,
   token: ZeroAddress,
   ticketPrice: 0n,
   houseEdgeBps: 0,
+  startTime: 0,
   endTime: 0,
   status: 0,
   requestId: 0n,
@@ -59,6 +65,18 @@ function parseError(err: unknown): string {
   if (msg.includes("user rejected")) return "Transaction cancelled in wallet.";
   if (msg.includes("CALL_EXCEPTION")) return "This action is not available in the current draw state.";
   return msg;
+}
+
+function formatRemaining(totalSeconds: number): string {
+  if (totalSeconds <= 0) return "00:00";
+  const hours = Math.floor(totalSeconds / 3600);
+  const mins = Math.floor((totalSeconds % 3600) / 60);
+  const secs = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours.toString().padStart(2, "0")}:${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
+  }
+  return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
 }
 
 export default function LotteryPage() {
@@ -89,31 +107,48 @@ export default function LotteryPage() {
   const selectedDrawTokenIsEth = currentDraw.token.toLowerCase() === ZeroAddress.toLowerCase();
   const activeTokenSymbol = selectedDrawTokenIsEth ? "ETH" : tokenSymbol;
 
-  const nowSec = Math.floor(Date.now() / 1000);
+  const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000));
   const countdownLabel = useMemo(() => {
     if (!currentDraw.endTime) return "-";
-    const remaining = currentDraw.endTime - nowSec;
-    if (remaining <= 0) return "00:00";
-    const mins = Math.floor(remaining / 60)
-      .toString()
-      .padStart(2, "0");
-    const secs = Math.floor(remaining % 60)
-      .toString()
-      .padStart(2, "0");
-    return `${mins}:${secs}`;
+    return formatRemaining(currentDraw.endTime - nowSec);
   }, [currentDraw.endTime, nowSec]);
+  const startsInLabel = useMemo(() => {
+    if (!currentDraw.startTime) return "-";
+    return formatRemaining(currentDraw.startTime - nowSec);
+  }, [currentDraw.startTime, nowSec]);
 
-  const canBuy = currentDraw.status === 1 && nowSec < currentDraw.endTime;
+  const isNotStarted = currentDraw.status === 1 && nowSec < currentDraw.startTime;
+  const canBuy = currentDraw.status === 1 && nowSec >= currentDraw.startTime && nowSec < currentDraw.endTime;
   const canStart = currentDraw.status === 1 && nowSec >= currentDraw.endTime;
   const canFinalize = currentDraw.status === 3;
   const isWaitingRandomness = currentDraw.status === 2;
   const isFinalized = currentDraw.status === 4;
   const isTimedOut = currentDraw.status === 6;
+  const ongoingDraws = useMemo(() => recentDraws.filter((row) => ONGOING_STATUSES.has(row.status)), [recentDraws]);
+  const finishedDraws = useMemo(() => recentDraws.filter((row) => FINISHED_STATUSES.has(row.status)), [recentDraws]);
+
+  const currentBetHint = useMemo(() => {
+    if (currentDraw.drawId <= 0n) return "";
+    if (isNotStarted) return `Not started yet. Starts in ${startsInLabel}.`;
+    if (canBuy) return "Betting is open now.";
+    if (currentDraw.status === 1 && nowSec >= currentDraw.endTime) return "Betting closed. Draw has reached end time.";
+    if (currentDraw.status === 2) return "Betting closed. Waiting for randomness.";
+    if (currentDraw.status === 3) return "Betting closed. Ready to finalize.";
+    if (currentDraw.status >= 4) return "This draw is finished. Pick an ongoing draw below.";
+    return "";
+  }, [canBuy, currentDraw.drawId, currentDraw.endTime, currentDraw.status, isNotStarted, nowSec, startsInLabel]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
     const query = new URLSearchParams(window.location.search);
     setDebugMode(query.get("debug") === "1");
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setNowSec(Math.floor(Date.now() / 1000));
+    }, 1000);
+    return () => window.clearInterval(timer);
   }, []);
 
   const loadDrawById = useCallback(async (drawId: bigint) => {
@@ -137,6 +172,7 @@ export default function LotteryPage() {
       token: info.token,
       ticketPrice: info.ticketPrice,
       houseEdgeBps: Number(info.houseEdgeBps),
+      startTime: Number(info.startTime),
       endTime: Number(info.endTime),
       status: Number(info.status),
       requestId: info.requestId,
@@ -190,6 +226,8 @@ export default function LotteryPage() {
         winner: fin?.winner ?? info.winner,
         prize: fin?.prize ?? 0n,
         status: Number(info.status),
+        startTime: Number(info.startTime),
+        endTime: Number(info.endTime),
         verifyTxHash: fulfillMap.get(key) ?? "",
       });
       if (drawId === 1n) break;
@@ -240,7 +278,19 @@ export default function LotteryPage() {
           setStatusText("No draws created yet.");
           return;
         }
-        await Promise.all([loadDrawById(latestDrawId), loadRecentDraws(latestDrawId)]);
+        let preferredDrawId = latestDrawId;
+        let inspected = 0;
+        for (let drawId = latestDrawId; drawId > 0n && inspected < 20; drawId--) {
+          const info = await lottery.draws(drawId);
+          if (ONGOING_STATUSES.has(Number(info.status))) {
+            preferredDrawId = drawId;
+            break;
+          }
+          inspected += 1;
+          if (drawId === 1n) break;
+        }
+
+        await Promise.all([loadDrawById(preferredDrawId), loadRecentDraws(latestDrawId)]);
       } catch (err) {
         setStatusText(`Failed to load draws: ${(err as Error).message}`);
       }
@@ -365,6 +415,24 @@ export default function LotteryPage() {
     }
   }
 
+  function getOngoingLabel(row: RecentDraw): string {
+    if (row.status === 1 && nowSec < row.startTime) return "Not Started";
+    if (row.status === 1 && nowSec >= row.startTime && nowSec < row.endTime) return "Betting Open";
+    if (row.status === 2) return "Waiting Randomness";
+    if (row.status === 3) return "Ready to Finalize";
+    return DRAW_STATUS[row.status] ?? "Unknown";
+  }
+
+  function getOngoingMeta(row: RecentDraw): string {
+    if (row.status === 1 && nowSec < row.startTime) {
+      return `Starts in ${formatRemaining(row.startTime - nowSec)}`;
+    }
+    if (row.status === 1) return "Betting open";
+    if (row.status === 2) return "Waiting randomness";
+    if (row.status === 3) return "Ready to finalize";
+    return DRAW_STATUS[row.status] ?? "Unknown";
+  }
+
   return (
     <ClientOnly fallback={<main className="page-shell" />}>
       <main className="page-shell">
@@ -434,6 +502,8 @@ export default function LotteryPage() {
             )}
           </div>
 
+          {currentBetHint && <p className="helper">{currentBetHint}</p>}
+
           {isWaitingRandomness && (
             <div className="inline" style={{ marginTop: "10px" }}>
               <span className="spinner" />
@@ -446,7 +516,12 @@ export default function LotteryPage() {
               <div className="number-row">
                 <small>Winner</small>
                 <strong>
-                  <AddressLabel address={currentDraw.winner} className="mono" onCopied={() => pushToast("Copied", "confirmed")} />
+                  <AddressLabel
+                    address={currentDraw.winner}
+                    provider={wallet.provider}
+                    className="mono"
+                    onCopied={() => pushToast("Copied", "confirmed")}
+                  />
                 </strong>
               </div>
               <div className="number-row">
@@ -472,36 +547,86 @@ export default function LotteryPage() {
           </details>
         </section>
 
-        <section className="card">
-          <h3>Recent Draws</h3>
-          <div className="list" style={{ marginTop: "12px" }}>
-            {recentDraws.length === 0 && <p className="helper">No recent draws yet.</p>}
-            {recentDraws.map((row) => (
-              <article key={row.drawId.toString()} className="list-row">
-                <div>
-                  <strong>Draw #{row.drawId.toString()}</strong>
-                  <div className="list-meta">
-                    {row.status === 4
-                      ? (
-                          <>
-                            Winner{" "}
-                            <AddressLabel address={row.winner} className="mono" onCopied={() => pushToast("Copied", "confirmed")} />{" "}
-                            | Prize {formatAmount(row.prize, selectedDrawTokenIsEth ? 18 : tokenDecimals, 4)} {activeTokenSymbol}
-                          </>
-                        )
-                      : DRAW_STATUS[row.status] ?? "Unknown"}
+        <section className="grid-2">
+          <article className="card">
+            <div className="inline" style={{ justifyContent: "space-between" }}>
+              <h3>Ongoing Draws</h3>
+              <span className="pill good">{ongoingDraws.length}</span>
+            </div>
+            <p className="helper" style={{ marginTop: "8px" }}>
+              Live rounds. Choose one, then buy tickets.
+            </p>
+            <div className="list" style={{ marginTop: "12px" }}>
+              {ongoingDraws.length === 0 && <p className="helper">No live draws right now.</p>}
+              {ongoingDraws.map((row) => (
+                <article key={row.drawId.toString()} className={`list-row ${currentDraw.drawId === row.drawId ? "active" : ""}`}>
+                  <div>
+                    <div className="inline" style={{ justifyContent: "space-between" }}>
+                      <strong>Draw #{row.drawId.toString()}</strong>
+                      <span className="pill good">{getOngoingLabel(row)}</span>
+                    </div>
+                    <div className="list-meta">{getOngoingMeta(row)}</div>
                   </div>
-                </div>
-                {row.verifyTxHash ? (
-                  <a className="btn ghost" href={explorerTx(row.verifyTxHash)} target="_blank" rel="noreferrer">
-                    Verify
-                  </a>
-                ) : (
-                  <span className="helper">-</span>
-                )}
-              </article>
-            ))}
-          </div>
+                  <div className="inline">
+                    <button className="btn secondary" type="button" onClick={() => void loadDrawById(row.drawId)} disabled={busyAction !== "none"}>
+                      {currentDraw.drawId === row.drawId ? "Loaded" : "Load"}
+                    </button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </article>
+
+          <article className="card">
+            <div className="inline" style={{ justifyContent: "space-between" }}>
+              <h3>Finished Draws</h3>
+              <span className="pill">{finishedDraws.length}</span>
+            </div>
+            <p className="helper" style={{ marginTop: "8px" }}>
+              Closed rounds for result checking.
+            </p>
+            <div className="list" style={{ marginTop: "12px" }}>
+              {finishedDraws.length === 0 && <p className="helper">No finished draws yet.</p>}
+              {finishedDraws.map((row) => (
+                <article key={row.drawId.toString()} className={`list-row ${currentDraw.drawId === row.drawId ? "active" : ""}`}>
+                  <div>
+                    <strong>Draw #{row.drawId.toString()}</strong>
+                    <div className="list-meta">
+                      {row.status === 4 ? (
+                        <>
+                          Winner{" "}
+                          <AddressLabel
+                            address={row.winner}
+                            provider={wallet.provider}
+                            className="mono"
+                            onCopied={() => pushToast("Copied", "confirmed")}
+                          />{" "}
+                          | Prize{" "}
+                          {formatAmount(row.prize, selectedDrawTokenIsEth ? 18 : tokenDecimals, 4)} {activeTokenSymbol}
+                        </>
+                      ) : row.status === 5 ? (
+                        "No winner. Pot rolled over."
+                      ) : row.status === 6 ? (
+                        "Timed out. Refund available."
+                      ) : (
+                        DRAW_STATUS[row.status] ?? "Unknown"
+                      )}
+                    </div>
+                  </div>
+                  <div className="inline">
+                    <button className="btn secondary" type="button" onClick={() => void loadDrawById(row.drawId)} disabled={busyAction !== "none"}>
+                      {currentDraw.drawId === row.drawId ? "Loaded" : "Load"}
+                    </button>
+                    {row.verifyTxHash ? (
+                      <a className="btn ghost" href={explorerTx(row.verifyTxHash)} target="_blank" rel="noreferrer">
+                        Verify
+                      </a>
+                    ) : null}
+                  </div>
+                </article>
+              ))}
+            </div>
+          </article>
         </section>
 
         {showDebug && (

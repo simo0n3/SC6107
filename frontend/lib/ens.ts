@@ -1,5 +1,10 @@
 import { JsonRpcProvider, getAddress, isAddress } from "ethers";
 
+export type EnsLookupProvider = {
+  lookupAddress(address: string): Promise<string | null>;
+  resolveName(name: string): Promise<string | null>;
+};
+
 type CacheEntry = {
   name: string | null;
   expiresAt: number;
@@ -73,26 +78,42 @@ function readCache(address: string): string | null | undefined {
   return localEntry.name;
 }
 
-export async function resolveEns(address: string): Promise<string | null> {
+async function lookupAndVerify(address: string, resolver: EnsLookupProvider): Promise<string | null> {
+  const name = await resolver.lookupAddress(address);
+  if (!name) return null;
+
+  const resolvedAddress = await resolver.resolveName(name);
+  if (!resolvedAddress) return null;
+  if (resolvedAddress.toLowerCase() !== address.toLowerCase()) return null;
+  return name;
+}
+
+export async function resolveEns(address: string, fallbackProvider: EnsLookupProvider | null = null): Promise<string | null> {
   if (!isAddress(address)) return null;
 
   const checksummed = getAddress(address);
   const cached = readCache(checksummed);
-  if (cached !== undefined) return cached;
+  if (cached) return cached;
+  if (cached === null && !fallbackProvider) return null;
 
   const mainnet = getMainnetProvider();
-  if (!mainnet) return writeCache(checksummed, null);
-
-  try {
-    const name = await mainnet.lookupAddress(checksummed);
-    if (!name) return writeCache(checksummed, null);
-
-    const resolvedAddress = await mainnet.resolveName(name);
-    if (!resolvedAddress) return writeCache(checksummed, null);
-    if (resolvedAddress.toLowerCase() !== checksummed.toLowerCase()) return writeCache(checksummed, null);
-
-    return writeCache(checksummed, name);
-  } catch {
-    return writeCache(checksummed, null);
+  if (mainnet) {
+    try {
+      const name = await lookupAndVerify(checksummed, mainnet);
+      if (name) return writeCache(checksummed, name);
+    } catch {
+      // ignore and continue to fallback provider
+    }
   }
+
+  if (fallbackProvider) {
+    try {
+      const name = await lookupAndVerify(checksummed, fallbackProvider);
+      if (name) return writeCache(checksummed, name);
+    } catch {
+      // ignore and return null below
+    }
+  }
+
+  return writeCache(checksummed, null);
 }

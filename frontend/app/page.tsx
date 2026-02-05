@@ -172,7 +172,14 @@ export default function HomePage() {
                     <span className="pill">{item.game}</span>
                     {item.winnerAddress ? (
                       <span>
-                        Winner <AddressLabel address={item.winnerAddress} className="mono" onCopied={() => pushToast("Copied", "confirmed")} /> | Prize{" "}
+                        Winner{" "}
+                        <AddressLabel
+                          address={item.winnerAddress}
+                          provider={wallet.provider}
+                          className="mono"
+                          onCopied={() => pushToast("Copied", "confirmed")}
+                        />{" "}
+                        | Prize{" "}
                         {item.prize}
                       </span>
                     ) : (
