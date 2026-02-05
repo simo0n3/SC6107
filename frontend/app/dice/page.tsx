@@ -255,7 +255,7 @@ export default function DicePage() {
 
       if (amountWei <= 0n) throw new Error("Amount must be greater than zero.");
       if (!Number.isInteger(rollUnder) || rollUnder < 1 || rollUnder > 99) {
-        throw new Error("Win chance must be between 1% and 99%.");
+        throw new Error("Target number must be between 1 and 99.");
       }
 
       const saltHex = hexlify(randomBytes(32));
@@ -401,7 +401,7 @@ export default function DicePage() {
         <section className="grid-2">
           <article className="card">
             <h2>Bet Slip</h2>
-            <p className="helper">Pick your token, amount, and win chance.</p>
+            <p className="helper">Pick your token, amount, and target number.</p>
 
             <div className="field-grid">
               <div className="field">
@@ -420,7 +420,7 @@ export default function DicePage() {
             </div>
 
             <div className="field" style={{ marginTop: "12px" }}>
-              <label>Win chance {winChance}%</label>
+              <label>Target number (1-99): {winChance}</label>
               <div className="slider-wrap">
                 <input
                   type="range"
@@ -429,7 +429,7 @@ export default function DicePage() {
                   value={Math.max(1, Math.min(99, winChance || 49))}
                   onChange={(e) => setRollUnderInput(e.target.value)}
                 />
-                <small className="helper">{winChance}% chance to win</small>
+                <small className="helper">If the roll is {winChance} or below, you win.</small>
               </div>
             </div>
 
@@ -441,7 +441,7 @@ export default function DicePage() {
                     ? `${formatAmount(expectedPayout, tokenChoice === "ETH" ? 18 : tokenDecimals, 4)} ${tokenChoice === "ETH" ? "ETH" : tokenSymbol}`
                     : "-"}
                 </strong>
-                <small>Incl. principal · House edge {(houseEdgeBps / 100).toFixed(2)}%</small>
+                <small>Incl. principal | House edge {(houseEdgeBps / 100).toFixed(2)}%</small>
               </div>
             </div>
 
@@ -449,6 +449,17 @@ export default function DicePage() {
               <button className="btn" type="button" disabled={!canTransact || busyAction !== "none"} onClick={() => void placeBet()}>
                 {busyAction === "place" ? "Waiting..." : "Place Bet"}
               </button>
+            </div>
+
+            <div className="number-grid" style={{ marginTop: "12px" }}>
+              <div className="number-row">
+                <small>How it works</small>
+                <div className="helper" style={{ marginTop: "6px", display: "grid", gap: "4px" }}>
+                  <span>1) Place Bet to lock your amount and target number.</span>
+                  <span>2) Chainlink VRF generates one random roll from 1 to 100.</span>
+                  <span>3) Roll less than or equal to your target means win; otherwise lose.</span>
+                </div>
+              </div>
             </div>
 
             {latestBet.betId > 0n && (
