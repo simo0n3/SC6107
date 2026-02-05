@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { Contract, isAddress } from "ethers";
+import { Contract, isAddress, parseUnits } from "ethers";
 import { AddressLabel } from "@/components/AddressLabel";
 import { AppHeader } from "@/components/AppHeader";
 import { ClientOnly } from "@/components/ClientOnly";
@@ -10,7 +10,7 @@ import { ToastStack } from "@/components/ToastStack";
 import { useToasts } from "@/hooks/useToasts";
 import { useWallet } from "@/hooks/useWallet";
 import { ADDRESSES } from "@/lib/config";
-import { diceGameAbi, lotteryGameAbi } from "@/lib/abis";
+import { diceGameAbi, erc20Abi, lotteryGameAbi } from "@/lib/abis";
 import { explorerTx, formatAmount } from "@/lib/utils";
 
 type RecentResult = {
@@ -30,6 +30,7 @@ export default function HomePage() {
   const [houseEdgeBps, setHouseEdgeBps] = useState(100);
   const [recentResults, setRecentResults] = useState<RecentResult[]>([]);
   const [statusText, setStatusText] = useState("Connect wallet to load live results.");
+  const [faucetBusy, setFaucetBusy] = useState(false);
 
   const envReady = useMemo(
     () => isAddress(ADDRESSES.diceGame) && isAddress(ADDRESSES.lotteryGame) && isAddress(ADDRESSES.vrfRouter),
@@ -123,6 +124,70 @@ export default function HomePage() {
     void loadLobbyData();
   }, [wallet.provider, wallet.isSepolia, envReady]);
 
+  async function claimSc7Faucet() {
+    if (!wallet.signer || !wallet.address) {
+      pushToast("Connect wallet first.", "failed");
+      return;
+    }
+    if (!wallet.isSepolia) {
+      pushToast("Wrong network: switch to Sepolia.", "failed");
+      return;
+    }
+    if (!isAddress(ADDRESSES.testToken)) {
+      pushToast("SC7 token address is missing in .env.local.", "failed");
+      return;
+    }
+
+    try {
+      setFaucetBusy(true);
+      const token = new Contract(ADDRESSES.testToken, erc20Abi, wallet.signer);
+      const [decimalsRaw, symbol, beforeRaw] = await Promise.all([
+        token.decimals(),
+        token.symbol(),
+        token.balanceOf(wallet.address),
+      ]);
+      const decimals = Number(decimalsRaw);
+      const before = BigInt(beforeRaw.toString());
+
+      const tx = await token.faucet();
+      pushToast("Tx sent: SC7 faucet", "sent");
+      await tx.wait();
+
+      const afterRaw = await token.balanceOf(wallet.address);
+      const after = BigInt(afterRaw.toString());
+      const minted = after - before;
+      const targetNet = parseUnits("100", decimals);
+
+      if (minted > targetNet && isAddress(ADDRESSES.treasuryVault)) {
+        const extra = minted - targetNet;
+        try {
+          const normalizeTx = await token.transfer(ADDRESSES.treasuryVault, extra);
+          pushToast("Tx sent: normalize to +100", "sent");
+          await normalizeTx.wait();
+          pushToast(`Claimed 100 ${symbol}.`, "confirmed");
+          return;
+        } catch {
+          pushToast(
+            `Faucet succeeded but normalize step failed. You received ${formatAmount(minted, decimals, 2)} ${symbol}.`,
+            "failed",
+          );
+          return;
+        }
+      }
+
+      pushToast(`Claimed ${formatAmount(minted, decimals, 2)} ${symbol}.`, "confirmed");
+    } catch (err) {
+      const msg = (err as { shortMessage?: string; message?: string })?.shortMessage ?? (err as Error)?.message ?? "Faucet failed.";
+      if (msg.includes("user rejected")) {
+        pushToast("Transaction cancelled in wallet.", "failed");
+      } else {
+        pushToast(msg, "failed");
+      }
+    } finally {
+      setFaucetBusy(false);
+    }
+  }
+
   return (
     <ClientOnly fallback={<main className="page-shell" />}>
       <main className="page-shell">
@@ -194,6 +259,22 @@ export default function HomePage() {
               </article>
             ))}
           </div>
+        </section>
+
+        <section className="card">
+          <div className="inline" style={{ justifyContent: "space-between" }}>
+            <h3>SC7 Faucet</h3>
+            <span className="pill">Net +100 SC7</span>
+          </div>
+          <p className="helper" style={{ marginTop: "8px" }}>
+            Test helper: claim SC7 for this wallet.
+          </p>
+          <div className="cta-row">
+            <button className="btn secondary" type="button" disabled={faucetBusy || !wallet.address || !wallet.isSepolia} onClick={() => void claimSc7Faucet()}>
+              {faucetBusy ? "Waiting..." : "Claim 100 SC7"}
+            </button>
+          </div>
+          <p className="helper">If the on-chain faucet dispenses more, the extra amount is auto-sent back to TreasuryVault.</p>
         </section>
       </main>
     </ClientOnly>
